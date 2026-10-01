@@ -240,7 +240,8 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                     <span class='logo-icon'>📡</span>
                     <div>
                         <h1>BoxStation</h1>
-                        <span class='badge'>FPT Box &amp; G2 Mini NAS</span>
+                        <span class='badge'>FPT Box &amp; G2 Mini NAS v1.0.1</span>
+                        <span class='badge' style='background: rgba(16, 185, 129, 0.15); color: #10B981; border-color: rgba(16, 185, 129, 0.3);'>⚡ Tự chạy 24/7 khi khởi động</span>
                     </div>
                 </div>
                 <div class='nav-actions'>
@@ -830,7 +831,8 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
             val uploadedFile = parseAndSaveMultipartFile(input, boundary, apkDir)
             if (uploadedFile != null && uploadedFile.exists()) {
                 val result = ApkInstallerHelper.installApk(context, uploadedFile)
-                val json = """{"success":${result.success},"method":"${result.method}","message":"${result.message.replace("\"", "\\\"")}"}"""
+                val detailsJson = result.details.joinToString(",") { "\"${it.replace("\"", "\\\"")}\"" }
+                val json = """{"success":${result.success},"method":"${result.method}","message":"${result.message.replace("\"", "\\\"")}","details":[$detailsJson]}"""
                 sendResponse(out, 200, "application/json", json.toByteArray())
             } else {
                 sendResponse(out, 500, "application/json", """{"success":false,"message":"Không thể lưu file APK"}""".toByteArray())
@@ -852,7 +854,8 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
 
         val apkFile = File(apkPath)
         val result = ApkInstallerHelper.installApk(context, apkFile)
-        val json = """{"success":${result.success},"method":"${result.method}","message":"${result.message.replace("\"", "\\\"")}"}"""
+        val detailsJson = result.details.joinToString(",") { "\"${it.replace("\"", "\\\"")}\"" }
+        val json = """{"success":${result.success},"method":"${result.method}","message":"${result.message.replace("\"", "\\\"")}","details":[$detailsJson]}"""
         sendResponse(out, 200, "application/json", json.toByteArray())
     }
 
@@ -934,6 +937,7 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
             <head>
                 <meta charset='utf-8'/>
                 <meta name='viewport' content='width=device-width, initial-scale=1'/>
+                <meta http-equiv='refresh' content='3'/>
                 <title>BoxStation - Nhật ký hệ thống</title>
                 <style>
                     body { background: #0F172A; color: #F8FAFC; font-family: monospace; padding: 20px; }

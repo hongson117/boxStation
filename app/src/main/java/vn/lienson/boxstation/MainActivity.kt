@@ -1,7 +1,9 @@
 package vn.lienson.boxstation
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -59,6 +61,19 @@ class MainActivity : AppCompatActivity() {
                 .show()
         }
 
+        // Đảm bảo BootReceiver luôn được hệ thống kích hoạt tự khởi động
+        try {
+            val receiver = ComponentName(this, BootReceiver::class.java)
+            packageManager.setComponentEnabledSetting(
+                receiver,
+                PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                PackageManager.DONT_KILL_APP
+            )
+            AppLogger.i("BOOT", "🟢 [TỰ KHỞI ĐỘNG] BootReceiver đã được kích hoạt thành công (Trạng thái: ENABLED)")
+        } catch (e: Exception) {
+            AppLogger.e("BOOT", "🔴 [TỰ KHỞI ĐỘNG LỖI] Lỗi kích hoạt BootReceiver: ${e.message}", e)
+        }
+
         startStationService()
     }
 
@@ -73,8 +88,9 @@ class MainActivity : AppCompatActivity() {
         }
         try {
             ContextCompat.startForegroundService(this, serviceIntent)
+            AppLogger.i("SERVICE", "🟢 [DỊCH VỤ] Đã gửi lệnh startForegroundService cho StationService")
         } catch (e: Exception) {
-            AppLogger.e("MainActivity", "Lỗi khởi động StationService: ${e.message}", e)
+            AppLogger.e("SERVICE", "🔴 [DỊCH VỤ THẤT BẠI] Lỗi khởi động StationService: ${e.message}", e)
         }
     }
 
