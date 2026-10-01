@@ -5,4 +5,5 @@
     <string name="service_running">BoxStation Service đang chạy ngầm 24/7</string>
     <string name="status_online">🟢 SERVER ONLINE (Cổng 8888)</string>
     <string name="status_offline">🔴 SERVER ĐANG TẮT</string>
+    <string name="accessibility_desc">Tự động bấm nút Cài đặt và Cập nhật ứng dụng ngầm cho BoxStation mà không cần cắm HDMI hay dùng remote</string>
 </resources>

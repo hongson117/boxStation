@@ -23,6 +23,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvAllIps: TextView
     private lateinit var tvDrivesList: TextView
     private lateinit var tvDeviceInfo: TextView
+    private lateinit var btnAutoClick: Button
     private lateinit var btnPermission: Button
     private lateinit var btnRestartService: Button
     private lateinit var btnRebootBox: Button
@@ -36,9 +37,14 @@ class MainActivity : AppCompatActivity() {
         tvAllIps = findViewById(R.id.tvAllIps)
         tvDrivesList = findViewById(R.id.tvDrivesList)
         tvDeviceInfo = findViewById(R.id.tvDeviceInfo)
+        btnAutoClick = findViewById(R.id.btnAutoClick)
         btnPermission = findViewById(R.id.btnPermission)
         btnRestartService = findViewById(R.id.btnRestartService)
         btnRebootBox = findViewById(R.id.btnRebootBox)
+
+        btnAutoClick.setOnClickListener {
+            openAccessibilitySettings()
+        }
 
         btnPermission.setOnClickListener {
             checkAndRequestStoragePermission()
@@ -73,6 +79,9 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             AppLogger.e("BOOT", "🔴 [TỰ KHỞI ĐỘNG LỖI] Lỗi kích hoạt BootReceiver: ${e.message}", e)
         }
+
+        // Thử kích hoạt AutoInstall qua shell ngầm nếu có quyền
+        AutoInstallService.tryEnableViaShell()
 
         startStationService()
     }
@@ -130,6 +139,15 @@ class MainActivity : AppCompatActivity() {
             tvDrivesList.text = sb.toString()
         }
 
+        // Trạng thái Auto-Click Trợ Năng
+        if (AutoInstallService.checkAccessibilityEnabled(this)) {
+            btnAutoClick.text = "✅ ĐÃ BẬT AUTO-CLICK CÀI ĐẶT (KHÔNG CẦN HDMI)"
+            btnAutoClick.setBackgroundColor(ContextCompat.getColor(this, R.color.accent_green))
+        } else {
+            btnAutoClick.text = "⚡ 1-CLICK: BẬT AUTO-CLICK CÀI ĐẶT (TRỢ NĂNG)"
+            btnAutoClick.setBackgroundColor(ContextCompat.getColor(this, R.color.accent_orange))
+        }
+
         // Quyền lưu trữ Android 11+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (Environment.isExternalStorageManager()) {
@@ -149,6 +167,32 @@ class MainActivity : AppCompatActivity() {
         // Thông tin thiết bị
         val sys = SystemManagerHelper.getSystemInfo(this)
         tvDeviceInfo.text = "${sys.deviceModel} | ${sys.androidVersion} | RAM: Còn trống ${sys.freeRam} / ${sys.totalRam} | Uptime: ${sys.uptime}"
+    }
+
+    private fun openAccessibilitySettings() {
+        if (AutoInstallService.checkAccessibilityEnabled(this)) {
+            Toast.makeText(this, "Dịch vụ Auto-Click Trợ Năng đã đang hoạt động hoàn hảo!", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val intents = listOf(
+            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS),
+            Intent().setComponent(ComponentName("com.android.tv.settings", "com.android.tv.settings.system.AccessibilityActivity")),
+            Intent().setComponent(ComponentName("com.google.android.tv.settings", "com.google.android.tv.settings.system.AccessibilityActivity")),
+            Intent().setComponent(ComponentName("com.android.settings", "com.android.settings.AccessibilitySettings"))
+        )
+
+        for (intent in intents) {
+            try {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+                Toast.makeText(this, "Hãy gạt BẬT 'BoxStation Auto Install' trong mục Trợ năng!", Toast.LENGTH_LONG).show()
+                return
+            } catch (e: Exception) {
+                // try next
+            }
+        }
+        Toast.makeText(this, "Không thể mở cài đặt Trợ năng.", Toast.LENGTH_SHORT).show()
     }
 
     private fun checkAndRequestStoragePermission() {
