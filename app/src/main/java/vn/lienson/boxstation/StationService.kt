@@ -12,11 +12,13 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.*
 
 class StationService : Service() {
 
     private var httpServer: StationHttpServer? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var rebootJob: Job? = null
 
     companion object {
         const val CHANNEL_ID = "box_station_channel"
@@ -46,6 +48,18 @@ class StationService : Service() {
         httpServer = StationHttpServer(this, 8888)
         httpServer?.start()
         isServiceRunning = true
+
+        // 3. Tự động kiểm tra lịch khởi động lại mỗi 3h sáng
+        rebootJob = CoroutineScope(Dispatchers.Default).launch {
+            while (isActive) {
+                try {
+                    AutoRebootHelper.checkAndTriggerDailyReboot(applicationContext)
+                } catch (e: Exception) {
+                    // pass
+                }
+                delay(30_000)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -108,6 +122,8 @@ class StationService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isServiceRunning = false
+        rebootJob?.cancel()
+        rebootJob = null
         httpServer?.stop()
         httpServer = null
 

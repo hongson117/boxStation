@@ -1,5 +1,6 @@
 package vn.lienson.boxstation
 
+import android.accessibilityservice.AccessibilityService
 import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
@@ -131,6 +132,16 @@ object SystemManagerHelper {
             return true to "Đang khởi động lại thiết bị (svc power)..."
         } catch (e: Exception) {
             // pass
+        }
+
+        // 6. Thử qua AccessibilityService.GLOBAL_ACTION_POWER_DIALOG
+        val service = AutoInstallService.instance
+        if (service != null) {
+            val ok = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_POWER_DIALOG)
+            if (ok) {
+                AppLogger.i("System", "🟢 Đã mở bảng nguồn hệ thống qua Trợ năng (Auto-Click sẽ tự bấm Khởi động lại)")
+                return true to "Đang kích hoạt khởi động lại Box qua Trợ năng..."
+            }
         }
 
         return false to "Không thể tự động reboot: Cần quyền Root hoặc chữ ký System. Bạn có thể rút nguồn khởi động lại nếu bị treo."

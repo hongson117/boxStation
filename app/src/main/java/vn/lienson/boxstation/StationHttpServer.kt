@@ -150,16 +150,25 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                 method == "POST" && path == "/api/app/uninstall" -> {
                     handleAppUninstall(inputStream, outputStream, headers)
                 }
+                method == "POST" && path == "/api/app/stop" -> {
+                    handleAppStop(inputStream, outputStream, headers)
+                }
 
-                // Chụp màn hình TV từ xa
+                // Chụp màn hình TV từ xa & Remote ảo
                 method == "GET" && path == "/screen" -> {
                     serveScreenPage(outputStream)
                 }
                 method == "GET" && path == "/api/screenshot" -> {
                     serveScreenshotImage(outputStream)
                 }
+                (method == "GET" || method == "POST") && path == "/api/remote" -> {
+                    handleRemoteControl(outputStream, queryParams["key"])
+                }
 
-                // Reboot FPT Box từ xa
+                // Tự động Reboot 03:00 sáng & Reboot thủ công
+                (method == "GET" || method == "POST") && path == "/api/auto-reboot" -> {
+                    handleAutoRebootConfig(outputStream, queryParams)
+                }
                 (method == "GET" || method == "POST") && path == "/api/reboot" -> {
                     handleReboot(outputStream)
                 }
@@ -997,12 +1006,15 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
             first = false
             sb.append("\"$k\":\"$v\"")
         }
-        sb.append("}}")
+        sb.append("},")
+        sb.append("\"autoReboot\":{\"enabled\":${AutoRebootHelper.isEnabled(context)},\"schedule\":\"${AutoRebootHelper.getStatusString(context)}\"},")
+        sb.append("\"appVersion\":\"v${BuildConfig.VERSION_NAME}\"")
+        sb.append("}")
         sendResponse(out, 200, "application/json", sb.toString().toByteArray())
     }
 
     // --- 8. HEADER BAR HELPER ---
-    private fun renderHeaderBar(activeTab: String, title: String = "BoxStation", badge: String = "v1.0.4", icon: String = "📡"): String {
+    private fun renderHeaderBar(activeTab: String, title: String = "BoxStation", badge: String = "v${BuildConfig.VERSION_NAME}", icon: String = "📡"): String {
         val navFiles = if (activeTab == "files") "btn btn-primary" else "btn btn-outline"
         val navApps = if (activeTab == "apps") "btn btn-primary" else "btn btn-outline"
         val navScreen = if (activeTab == "screen") "btn btn-primary" else "btn btn-outline"
@@ -1017,6 +1029,7 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                         <h1>$title</h1>
                         <span class='badge'>FPT Box &amp; G2 Mini NAS $badge</span>
                         <span class='badge' style='background: rgba(16, 185, 129, 0.15); color: #10B981; border-color: rgba(16, 185, 129, 0.3);'>⚡ 24/7 Headless</span>
+                        <span class='badge' style='background: rgba(245, 158, 11, 0.15); color: #F59E0B; border-color: rgba(245, 158, 11, 0.3);'>⏰ Reboot 03:00 Sáng</span>
                     </div>
                 </div>
                 <div class='nav-actions'>
@@ -1091,11 +1104,12 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                         <td class='col-desktop'>${app.sizeFormatted}</td>
                         <td class='file-actions' onclick='event.stopPropagation()'>
                             <button onclick="launchApp('$encPkg', '$safeName')" class='btn-sm btn-primary'>🚀 Mở</button>
+                            <button onclick="stopApp('$encPkg', '$safeName')" class='btn-sm btn-outline' style='color: #F59E0B; border-color: #F59E0B; margin-left: 4px;'>⏹️ Tắt</button>
                 """.trimIndent())
 
                 if (!app.isSystem && app.packageName != context.packageName) {
                     html.append("""
-                        <button onclick="uninstallApp('$encPkg', '$safeName')" class='btn-sm btn-danger'>🗑️ Gỡ</button>
+                        <button onclick="uninstallApp('$encPkg', '$safeName')" class='btn-sm btn-danger' style='margin-left: 4px;'>🗑️ Gỡ</button>
                     """.trimIndent())
                 }
 
@@ -1120,6 +1134,17 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
 
                 function launchApp(pkgEnc, name) {
                     fetch('/api/app/launch', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                        body: 'pkg=' + pkgEnc
+                    }).then(r => r.json()).then(res => {
+                        alert(res.message);
+                    });
+                }
+
+                function stopApp(pkgEnc, name) {
+                    if (!confirm('Dừng/Đóng ứng dụng "' + name + '" trên TV?')) return;
+                    fetch('/api/app/stop', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                         body: 'pkg=' + pkgEnc
@@ -1223,8 +1248,43 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
             </div>
 
             <div style='background: #020617; border: 2px solid #334155; border-radius: 14px; padding: 12px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.6);'>
-                <img id='tvScreen' src='/api/screenshot' alt='Màn hình TV' style='max-width: 100%; max-height: 75vh; border-radius: 8px; object-fit: contain; background: #000;' />
+                <img id='tvScreen' src='/api/screenshot' alt='Màn hình TV' style='max-width: 100%; max-height: 70vh; border-radius: 8px; object-fit: contain; background: #000;' />
                 <div id='screenMeta' style='color: var(--text-muted); font-size: 12px; margin-top: 8px;'>Ảnh chụp màn hình thực tế từ Box</div>
+            </div>
+
+            <!-- Virtual Remote Control Panel -->
+            <div style='background: #0F172A; border: 1px solid #1E293B; border-radius: 14px; padding: 20px; margin-top: 20px; max-width: 540px; margin-left: auto; margin-right: auto;'>
+                <div style='font-size: 15px; font-weight: bold; text-align: center; margin-bottom: 16px; color: #38BDF8;'>🎮 Điều Khiển TV Từ Xa (Virtual Remote)</div>
+
+                <!-- System Controls -->
+                <div style='display: flex; justify-content: center; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;'>
+                    <button onclick="sendKey('wake')" class='btn-sm btn-outline' style='border-color: #10B981; color: #10B981;'>⚡ Bật màn hình</button>
+                    <button onclick="sendKey('home')" class='btn-sm btn-primary'>🏠 Home</button>
+                    <button onclick="sendKey('back')" class='btn-sm btn-outline'>🔙 Quay lại</button>
+                    <button onclick="sendKey('recents')" class='btn-sm btn-outline'>📋 Đa nhiệm</button>
+                    <button onclick="sendKey('volup')" class='btn-sm btn-outline'>🔊 Vol +</button>
+                    <button onclick="sendKey('voldown')" class='btn-sm btn-outline'>🔉 Vol -</button>
+                    <button onclick="sendKey('mute')" class='btn-sm btn-outline'>🔇 Mute</button>
+                </div>
+
+                <!-- D-Pad Directional Controls -->
+                <div style='display: flex; flex-direction: column; align-items: center; gap: 6px; margin-bottom: 8px;'>
+                    <div>
+                        <button onclick="sendKey('up')" class='btn btn-outline' style='width: 72px; height: 44px; font-size: 18px;'>▲</button>
+                    </div>
+                    <div style='display: flex; gap: 6px;'>
+                        <button onclick="sendKey('left')" class='btn btn-outline' style='width: 72px; height: 44px; font-size: 18px;'>◀</button>
+                        <button onclick="sendKey('enter')" class='btn btn-primary' style='width: 72px; height: 44px; font-size: 16px; font-weight: bold;'>OK</button>
+                        <button onclick="sendKey('right')" class='btn btn-outline' style='width: 72px; height: 44px; font-size: 18px;'>▶</button>
+                    </div>
+                    <div>
+                        <button onclick="sendKey('down')" class='btn btn-outline' style='width: 72px; height: 44px; font-size: 18px;'>▼</button>
+                    </div>
+                </div>
+
+                <div style='text-align: center; color: var(--text-muted); font-size: 12px; margin-top: 12px;'>
+                    ⏰ Tự động khởi động lại Box: 03:00 sáng mỗi ngày (${AutoRebootHelper.getStatusString(context)})
+                </div>
             </div>
 
             <script>
@@ -1251,6 +1311,14 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                         btn.classList.remove('btn-outline');
                         btn.classList.add('btn-primary');
                     }
+                }
+
+                function sendKey(k) {
+                    fetch('/api/remote?key=' + k, {method: 'POST'})
+                        .then(r => r.json())
+                        .then(res => {
+                            setTimeout(refreshScreen, 350);
+                        });
                 }
             </script>
         """.trimIndent())
@@ -1728,5 +1796,101 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                 }
             </script>
         """.trimIndent()
+    }
+
+    private fun handleAppStop(input: InputStream, out: OutputStream, headers: Map<String, String>) {
+        val body = readBodyString(input, headers)
+        val params = parseQueryParams(body)
+        val pkg = params["pkg"]
+        if (pkg.isNullOrEmpty()) {
+            sendResponse(out, 400, "application/json", """{"success":false,"message":"Thiếu package name"}""".toByteArray())
+            return
+        }
+        val (ok, msg) = AppManagerHelper.stopApp(context, pkg)
+        val safeMsg = msg.replace("\"", "\\\"")
+        val json = """{"success":$ok,"message":"$safeMsg"}"""
+        sendResponse(out, 200, "application/json", json.toByteArray(StandardCharsets.UTF_8))
+    }
+
+    private fun handleRemoteControl(out: OutputStream, key: String?) {
+        val k = key?.lowercase(Locale.ROOT) ?: ""
+        var success = false
+        var message = ""
+        val service = AutoInstallService.instance
+
+        when (k) {
+            "home" -> {
+                success = service?.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME) ?: false
+                if (!success) {
+                    try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "3")); success = true } catch (e: Exception) {}
+                }
+                message = if (success) "Đã về màn hình Home" else "Trợ năng chưa sẵn sàng"
+            }
+            "back" -> {
+                success = service?.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK) ?: false
+                if (!success) {
+                    try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "4")); success = true } catch (e: Exception) {}
+                }
+                message = if (success) "Đã quay lại" else "Trợ năng chưa sẵn sàng"
+            }
+            "recents" -> {
+                success = service?.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS) ?: false
+                message = if (success) "Đã mở đa nhiệm" else "Trợ năng chưa sẵn sàng"
+            }
+            "power" -> {
+                success = service?.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_POWER_DIALOG) ?: false
+                message = if (success) "Đã mở menu nguồn" else "Trợ năng chưa sẵn sàng"
+            }
+            "wake" -> {
+                try {
+                    Runtime.getRuntime().exec(arrayOf("input", "keyevent", "224"))
+                    success = true
+                    message = "Đã bật màn hình TV"
+                } catch (e: Exception) {
+                    message = "Lỗi: ${e.message}"
+                }
+            }
+            "up" -> {
+                try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "19")); success = true; message = "Up" } catch (e: Exception) {}
+            }
+            "down" -> {
+                try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "20")); success = true; message = "Down" } catch (e: Exception) {}
+            }
+            "left" -> {
+                try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "21")); success = true; message = "Left" } catch (e: Exception) {}
+            }
+            "right" -> {
+                try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "22")); success = true; message = "Right" } catch (e: Exception) {}
+            }
+            "enter" -> {
+                try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "66")); success = true; message = "OK" } catch (e: Exception) {}
+            }
+            "volup" -> {
+                try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "24")); success = true; message = "Vol+" } catch (e: Exception) {}
+            }
+            "voldown" -> {
+                try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "25")); success = true; message = "Vol-" } catch (e: Exception) {}
+            }
+            "mute" -> {
+                try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "164")); success = true; message = "Mute" } catch (e: Exception) {}
+            }
+            else -> {
+                message = "Phím không hợp lệ: $k"
+            }
+        }
+
+        val json = """{"success":$success,"message":"$message"}"""
+        sendResponse(out, 200, "application/json", json.toByteArray(StandardCharsets.UTF_8))
+    }
+
+    private fun handleAutoRebootConfig(out: OutputStream, queryParams: Map<String, String>) {
+        if (queryParams.containsKey("enabled")) {
+            val enabled = queryParams["enabled"] == "1" || queryParams["enabled"]?.lowercase(Locale.ROOT) == "true"
+            AutoRebootHelper.setEnabled(context, enabled)
+        }
+        val isEn = AutoRebootHelper.isEnabled(context)
+        val status = AutoRebootHelper.getStatusString(context)
+        val json = """{"enabled":$isEn,"status":"$status","schedule":"03:00 hàng ngày"}"""
+        sendResponse(out, 200, "application/json", json.toByteArray(StandardCharsets.UTF_8))
     }
 }

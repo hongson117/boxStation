@@ -56,7 +56,7 @@
                 android:background="@drawable/ic_launcher"
                 android:backgroundTint="#1E293B"
                 android:padding="8dp"
-                android:text="v1.0.2"
+                android:text="v1.0.5"
                 android:textColor="@color/text_muted"
                 android:textSize="13sp" />
         </LinearLayout>
@@ -218,6 +218,17 @@
             android:textAlignment="center"
             android:textColor="@color/text_muted"
             android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/tvAutoReboot"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="⏰ Tự động khởi động lại Box: 03:00 sáng mỗi ngày (BẬT)"
+            android:textAlignment="center"
+            android:textColor="@color/accent_orange"
+            android:textSize="13sp"
+            android:textStyle="bold" />
 
     </LinearLayout>
 </ScrollView>

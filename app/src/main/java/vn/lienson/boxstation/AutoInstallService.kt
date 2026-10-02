@@ -22,8 +22,9 @@ class AutoInstallService : AccessibilityService() {
         private val TARGET_TEXTS = listOf(
             "cài đặt", "cập nhật", "tiếp tục", "cho phép", "xong", "mở",
             "gỡ cài đặt", "gỡ bỏ", "đồng ý", "xác nhận",
+            "buộc dừng", "buộc đóng", "dừng bắt buộc", "khởi động lại",
             "install", "update", "continue", "allow", "done", "open",
-            "uninstall", "ok", "delete"
+            "uninstall", "ok", "delete", "force stop", "reboot", "restart"
         )
 
         private val TARGET_VIEW_IDS = listOf(
@@ -31,7 +32,9 @@ class AutoInstallService : AccessibilityService() {
             "com.android.packageinstaller:id/btn_allow",
             "com.android.packageinstaller:id/btn_continue",
             "com.google.android.packageinstaller:id/ok_button",
-            "android:id/button1"
+            "android:id/button1",
+            "com.android.settings:id/force_stop_button",
+            "com.android.settings:id/right_button"
         )
 
         fun checkAccessibilityEnabled(context: Context): Boolean {

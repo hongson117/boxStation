@@ -1,5 +1,6 @@
 package vn.lienson.boxstation
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -9,6 +10,7 @@ import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.*
@@ -162,5 +164,45 @@ object AppManagerHelper {
             AppLogger.e("INSTALLER", "Lỗi gỡ app: ${e.message}", e)
             Pair(false, "Lỗi: ${e.message}")
         }
+    }
+
+    fun stopApp(context: Context, packageName: String): Pair<Boolean, String> {
+        if (packageName == context.packageName) {
+            return Pair(false, "Không thể dừng chính BoxStation đang chạy!")
+        }
+
+        var shellSuccess = false
+        // 1. Thử qua shell am force-stop
+        try {
+            val p = Runtime.getRuntime().exec(arrayOf("am", "force-stop", packageName))
+            p.waitFor()
+            if (p.exitValue() == 0) {
+                shellSuccess = true
+            }
+        } catch (e: Exception) {}
+
+        // 2. Thử ActivityManager.killBackgroundProcesses
+        try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            am?.killBackgroundProcesses(packageName)
+        } catch (e: Exception) {}
+
+        // 3. Nếu chưa tắt được: Mở Settings App Details để Trợ năng tự click "Buộc dừng"
+        if (!shellSuccess) {
+            try {
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:$packageName")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                AppLogger.i("APP", "⏹️ Đã mở màn hình cài đặt app $packageName (Trợ năng tự động bấm Buộc dừng)")
+                return Pair(true, "Đã gửi lệnh dừng app $packageName (Trợ năng sẽ tự bấm Buộc dừng)!")
+            } catch (e: Exception) {
+                AppLogger.e("APP", "Lỗi mở chi tiết app: ${e.message}")
+            }
+        }
+
+        AppLogger.i("APP", "⏹️ Đã dừng ứng dụng: $packageName")
+        return Pair(true, "Đã gửi lệnh dừng ứng dụng $packageName thành công!")
     }
 }

@@ -23,6 +23,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvAllIps: TextView
     private lateinit var tvDrivesList: TextView
     private lateinit var tvDeviceInfo: TextView
+    private lateinit var tvVersion: TextView
+    private lateinit var tvAutoReboot: TextView
     private lateinit var btnAutoClick: Button
     private lateinit var btnPermission: Button
     private lateinit var btnRestartService: Button
@@ -37,6 +39,10 @@ class MainActivity : AppCompatActivity() {
         tvAllIps = findViewById(R.id.tvAllIps)
         tvDrivesList = findViewById(R.id.tvDrivesList)
         tvDeviceInfo = findViewById(R.id.tvDeviceInfo)
+        tvVersion = findViewById(R.id.tvVersion)
+        tvAutoReboot = findViewById(R.id.tvAutoReboot)
+        tvVersion.text = "v${BuildConfig.VERSION_NAME}"
+        tvAutoReboot.text = "⏰ Tự động khởi động lại Box: 03:00 sáng mỗi ngày (${AutoRebootHelper.getStatusString(this)})"
         btnAutoClick = findViewById(R.id.btnAutoClick)
         btnPermission = findViewById(R.id.btnPermission)
         btnRestartService = findViewById(R.id.btnRestartService)
@@ -121,6 +127,8 @@ class MainActivity : AppCompatActivity() {
     private fun updateDashboard() {
         val preferredIp = SystemManagerHelper.getPreferredIp()
         tvServerUrl.text = "http://$preferredIp:8888"
+        tvVersion.text = "v${BuildConfig.VERSION_NAME}"
+        tvAutoReboot.text = "⏰ Tự động khởi động lại Box: 03:00 sáng mỗi ngày (${AutoRebootHelper.getStatusString(this)})"
 
         val ips = SystemManagerHelper.getIpAddresses()
         val ipSummary = ips.entries.joinToString("  |  ") { "${it.key}: ${it.value}" }
