@@ -56,7 +56,7 @@
                 android:background="@drawable/ic_launcher"
                 android:backgroundTint="#1E293B"
                 android:padding="8dp"
-                android:text="v1.0.5"
+                android:text="v1.0.6"
                 android:textColor="@color/text_muted"
                 android:textSize="13sp" />
         </LinearLayout>

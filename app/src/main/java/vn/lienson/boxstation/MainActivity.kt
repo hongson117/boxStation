@@ -15,6 +15,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
@@ -160,8 +161,15 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Quyền lưu trữ Android 11+
+        val hasStorageAccess = try {
+            val drives = StorageManagerHelper.getStorageDrives(this)
+            drives.isNotEmpty() && drives.any { File(it.path).canRead() }
+        } catch (e: Exception) {
+            false
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            if (Environment.isExternalStorageManager()) {
+            if (Environment.isExternalStorageManager() || hasStorageAccess) {
                 btnPermission.text = "✅ Đã Có Toàn Quyền Ổ Cứng"
                 btnPermission.isEnabled = true
                 btnPermission.setBackgroundColor(ContextCompat.getColor(this, R.color.accent_green))
@@ -224,22 +232,27 @@ class MainActivity : AppCompatActivity() {
 
     private fun checkAndRequestStoragePermission() {
         requestAllStoragePermissions()
+        val intents = mutableListOf<Intent>()
+        intents.add(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.parse("package:$packageName")
+        })
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            if (!Environment.isExternalStorageManager()) {
-                try {
-                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                        data = Uri.parse("package:$packageName")
-                    }
-                    startActivity(intent)
-                } catch (e: Exception) {
-                    val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-                    startActivity(intent)
-                }
-            } else {
-                Toast.makeText(this, "Ứng dụng đã có đầy đủ quyền đọc/ghi mọi ổ cứng!", Toast.LENGTH_SHORT).show()
-            }
-        } else {
-            Toast.makeText(this, "Đã gửi yêu cầu quyền bộ nhớ!", Toast.LENGTH_SHORT).show()
+            intents.add(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                data = Uri.parse("package:$packageName")
+            })
+            intents.add(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
         }
+        intents.add(Intent(Settings.ACTION_SETTINGS))
+
+        for (intent in intents) {
+            try {
+                startActivity(intent)
+                Toast.makeText(this, "Hãy kiểm tra quyền Tệp / Bộ nhớ trong Cài đặt!", Toast.LENGTH_LONG).show()
+                return
+            } catch (e: Exception) {
+                // try next
+            }
+        }
+        Toast.makeText(this, "Không thể mở cài đặt quyền.", Toast.LENGTH_SHORT).show()
     }
 }

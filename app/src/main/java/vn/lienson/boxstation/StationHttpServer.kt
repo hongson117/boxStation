@@ -93,19 +93,48 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
             }
 
             when {
+                // Giao thức WebDAV (VidHub, Infuse, Kodi, VLC, Apple TV, PotPlayer)
+                method == "OPTIONS" -> {
+                    WebDavHelper.handleOptions(outputStream)
+                }
+                method == "PROPFIND" -> {
+                    WebDavHelper.handlePropfind(context, outputStream, path, headers["depth"])
+                }
+                (method == "GET" || method == "HEAD") && (path.startsWith("/webdav") || path.startsWith("/dav")) -> {
+                    val target = WebDavHelper.resolveWebDavTarget(context, path)
+                    when (target) {
+                        is WebDavTarget.FileTarget -> {
+                            if (method == "HEAD") {
+                                WebDavHelper.handleHead(outputStream, target.file)
+                            } else {
+                                serveStream(outputStream, target.file.absolutePath, headers["range"], false)
+                            }
+                        }
+                        is WebDavTarget.DirTarget -> {
+                            sendResponse(outputStream, 302, "text/plain", "Redirecting...".toByteArray(), listOf("Location: /files?path=${URLEncoder.encode(target.dir.absolutePath, "UTF-8")}"))
+                        }
+                        is WebDavTarget.Root -> {
+                            sendResponse(outputStream, 302, "text/plain", "Redirecting...".toByteArray(), listOf("Location: /files"))
+                        }
+                        is WebDavTarget.NotFound -> {
+                            sendResponse(outputStream, 404, "text/plain", "Resource not found".toByteArray())
+                        }
+                    }
+                }
+
                 // Trang chủ và quản lý file
                 method == "GET" && (path == "/" || path == "/files") -> {
                     serveFileBrowser(outputStream, queryParams["path"])
                 }
 
                 // Streaming video / audio có hỗ trợ HTTP Range (Seeking mượt mà)
-                method == "GET" && path == "/stream" -> {
-                    serveStream(outputStream, queryParams["path"], headers["range"], false)
+                (method == "GET" || method == "HEAD") && path == "/stream" -> {
+                    serveStream(outputStream, queryParams["path"], headers["range"], false, isHead = method == "HEAD")
                 }
 
                 // Download file
-                method == "GET" && path == "/download" -> {
-                    serveStream(outputStream, queryParams["path"], headers["range"], true)
+                (method == "GET" || method == "HEAD") && path == "/download" -> {
+                    serveStream(outputStream, queryParams["path"], headers["range"], true, isHead = method == "HEAD")
                 }
 
                 // Upload file / APK
@@ -312,14 +341,39 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
         }
         html.append("</div>")
 
-        // Banner thông báo nếu chưa cấp toàn quyền bộ nhớ trên Android 11
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
-            html.append("""
-                <div class='storage-banner'>
-                    <div class='banner-text'>
-                        💡 <b>Chế độ tương thích Android 11:</b> Đang dùng Legacy Storage. Nếu một số thư mục hệ thống chưa thấy đủ file, hãy bấm nút để mở trang cấp quyền trên TV.
+        // Thẻ WebDAV Server cho VidHub, Infuse, Kodi, Apple TV
+        val ipAddress = SystemManagerHelper.getPreferredIp()
+        val webDavUrl = "http://$ipAddress:8888/webdav"
+        html.append("""
+            <div class='webdav-card' style='background: linear-gradient(135deg, #1e293b, #0f172a); border: 1px solid #334155; border-radius: 12px; padding: 16px 20px; margin-bottom: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);'>
+                <div style='display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;'>
+                    <div style='display: flex; align-items: center; gap: 12px;'>
+                        <span style='font-size: 28px;'>📡</span>
+                        <div>
+                            <div style='font-size: 16px; font-weight: 700; color: #38bdf8;'>WebDAV Server (Dành cho VidHub, Infuse, Kodi, VLC, Apple TV)</div>
+                            <div style='font-size: 13px; color: #94a3b8; margin-top: 2px;'>
+                                Thêm nguồn dữ liệu vào VidHub bằng giao thức <b>WebDAV</b> để tự động quét phim, poster, fanart và stream 4K mượt mà:
+                            </div>
+                        </div>
                     </div>
-                    <button onclick='requestStoragePermission()' class='btn-sm btn-accent'>🔑 Mở cấp quyền trên TV</button>
+                    <div style='display: flex; align-items: center; gap: 8px;'>
+                        <code style='background: #00000088; border: 1px solid #475569; padding: 6px 12px; border-radius: 6px; font-size: 14px; color: #22c55e;'>$webDavUrl</code>
+                        <button onclick="navigator.clipboard.writeText('$webDavUrl'); alert('Đã sao chép link WebDAV!');" class='btn-sm btn-accent' style='white-space: nowrap;'>📋 Copy Link</button>
+                    </div>
+                </div>
+                <div style='margin-top: 10px; font-size: 12px; color: #64748b; border-top: 1px dashed #334155; padding-top: 8px;'>
+                    💡 <b>Cách kết nối VidHub:</b> Mở VidHub &rarr; <b>Thêm nguồn (+)</b> &rarr; Chọn <b>WebDAV</b> &rarr; Nhập URL trên (hoặc IP: <code>$ipAddress</code>, Port: <code>8888</code>, Path: <code>/webdav</code>). Tài khoản & Mật khẩu để trống.
+                </div>
+            </div>
+        """.trimIndent())
+
+        if (drives.isEmpty()) {
+            html.append("""
+                <div class='storage-banner' style='background: #ef444422; border-left: 4px solid #ef4444; padding: 12px 16px; margin-bottom: 20px; border-radius: 8px;'>
+                    <div class='banner-text' style='color: #fca5a5;'>
+                        ⚠️ <b>Chưa nhận ổ cứng:</b> Hãy cắm lại cổng USB hoặc mở cài đặt quyền trên TV nếu cần.
+                    </div>
+                    <button onclick='requestStoragePermission()' class='btn-sm btn-accent'>🔑 Mở cài đặt TV</button>
                 </div>
             """.trimIndent())
         }
@@ -538,7 +592,7 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
     }
 
     // --- 2. HTTP RANGE STREAMING ENGINE ---
-    private fun serveStream(out: OutputStream, requestedPath: String?, rangeHeader: String?, isDownload: Boolean) {
+    private fun serveStream(out: OutputStream, requestedPath: String?, rangeHeader: String?, isDownload: Boolean, isHead: Boolean = false) {
         if (requestedPath.isNullOrEmpty()) {
             sendResponse(out, 400, "text/plain", "Missing path".toByteArray())
             return
@@ -600,6 +654,8 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
 
         out.write(headerBuilder.toString().toByteArray(StandardCharsets.UTF_8))
         out.flush()
+
+        if (isHead) return
 
         // Stream dữ liệu qua buffer 64KB
         val raf = RandomAccessFile(file, "r")
@@ -959,23 +1015,43 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
 
     private fun handleOpenStorageSettings(out: OutputStream) {
         try {
+            val intents = mutableListOf<Intent>()
+            // 1. Android TV universal App Info (Settings -> Apps -> BoxStation -> Permissions)
+            intents.add(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:${context.packageName}")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+            // 2. All Files Access intents
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                intents.add(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+                intents.add(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+            }
+            // 3. Fallback to general settings
+            intents.add(Intent(Settings.ACTION_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+
+            var opened = false
+            for (intent in intents) {
                 try {
-                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                        data = Uri.parse("package:${context.packageName}")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
                     context.startActivity(intent)
+                    opened = true
+                    break
                 } catch (e: Exception) {
-                    val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(intent)
+                    // try next intent
                 }
-                AppLogger.i("STORAGE", "📱 Đã gửi Intent mở màn hình cài đặt All Files Access trên TV")
-                sendResponse(out, 200, "application/json", """{"success":true,"message":"Đã kích hoạt màn hình cấp quyền trên TV!"}""".toByteArray())
+            }
+
+            if (opened) {
+                AppLogger.i("STORAGE", "📱 Đã gửi Intent mở màn hình cài đặt quyền/ứng dụng trên TV")
+                sendResponse(out, 200, "application/json", """{"success":true,"message":"Đã mở cài đặt ứng dụng trên TV!"}""".toByteArray())
             } else {
-                sendResponse(out, 200, "application/json", """{"success":true,"message":"Android 10 trở xuống tự động có quyền."}""".toByteArray())
+                sendResponse(out, 500, "application/json", """{"success":false,"message":"Không tìm thấy màn hình cài đặt phù hợp"}""".toByteArray())
             }
         } catch (e: Exception) {
             AppLogger.e("STORAGE", "Lỗi mở màn hình quyền: ${e.message}", e)
