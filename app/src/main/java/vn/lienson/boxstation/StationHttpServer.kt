@@ -6,13 +6,18 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import java.io.*
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.util.Locale
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class StationHttpServer(private val context: Context, val port: Int = 8888) {
 
@@ -127,6 +132,31 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                 }
                 method == "POST" && path == "/api/install-local" -> {
                     handleApkInstallLocal(inputStream, outputStream, headers)
+                }
+
+                // Quản lý ứng dụng
+                method == "GET" && path == "/apps" -> {
+                    serveAppsPage(outputStream, queryParams["all"] == "1")
+                }
+                method == "GET" && path == "/api/apps" -> {
+                    serveAppsJson(outputStream, queryParams["all"] == "1")
+                }
+                method == "GET" && path == "/api/app-icon" -> {
+                    serveAppIcon(outputStream, queryParams["pkg"])
+                }
+                method == "POST" && path == "/api/app/launch" -> {
+                    handleAppLaunch(inputStream, outputStream, headers)
+                }
+                method == "POST" && path == "/api/app/uninstall" -> {
+                    handleAppUninstall(inputStream, outputStream, headers)
+                }
+
+                // Chụp màn hình TV từ xa
+                method == "GET" && path == "/screen" -> {
+                    serveScreenPage(outputStream)
+                }
+                method == "GET" && path == "/api/screenshot" -> {
+                    serveScreenshotImage(outputStream)
                 }
 
                 // Reboot FPT Box từ xa
@@ -244,23 +274,7 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
         html.append("<div class='container'>")
 
         // Top Navigation Bar
-        html.append("""
-            <div class='header-bar'>
-                <div class='logo-title'>
-                    <span class='logo-icon'>📡</span>
-                    <div>
-                        <h1>BoxStation</h1>
-                        <span class='badge'>FPT Box &amp; G2 Mini NAS v1.0.3</span>
-                        <span class='badge' style='background: rgba(16, 185, 129, 0.15); color: #10B981; border-color: rgba(16, 185, 129, 0.3);'>⚡ Tự chạy 24/7 khi khởi động</span>
-                    </div>
-                </div>
-                <div class='nav-actions'>
-                    <a href='/install' class='btn btn-accent'>📦 Cài đặt APK</a>
-                    <a href='/log' class='btn btn-outline'>📋 Nhật ký</a>
-                    <button onclick='confirmReboot()' class='btn btn-danger'>🔄 Reboot Box</button>
-                </div>
-            </div>
-        """.trimIndent())
+        html.append(renderHeaderBar("files", "BoxStation", "v1.0.4", "📡"))
 
         // Drive Status Cards
         html.append("<div class='drives-grid'>")
@@ -750,23 +764,10 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
     private fun serveInstallPage(out: OutputStream) {
         val html = StringBuilder()
         html.append(getHtmlHead("BoxStation - Cài đặt APK từ xa"))
+        html.append("<div class='container'>")
+        html.append(renderHeaderBar("install", "Cài đặt APK từ xa", "v1.0.4", "📦"))
         html.append("""
-            <div class='container'>
-                <div class='header-bar'>
-                    <div class='logo-title'>
-                        <span class='logo-icon'>📦</span>
-                        <div>
-                            <h1>Cài đặt APK từ xa</h1>
-                            <span class='badge'>Không cần ADB hay Cáp kết nối</span>
-                        </div>
-                    </div>
-                    <div class='nav-actions'>
-                        <a href='/files' class='btn btn-outline'>📂 Xem ổ đĩa</a>
-                        <button onclick='confirmReboot()' class='btn btn-danger'>🔄 Reboot Box</button>
-                    </div>
-                </div>
-
-                <div class='content-box'>
+            <div class='content-box'>
                     <h3>Chọn hoặc Kéo thả file .apk vào đây để cài lên TV</h3>
                     <p style='color: var(--text-muted); margin-bottom: 20px;'>
                         Hệ thống sẽ tải file lên FPT Box và tự động mở trình cài đặt ngay trên màn hình TV hoặc cài ngầm.
@@ -1000,39 +1001,339 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
         sendResponse(out, 200, "application/json", sb.toString().toByteArray())
     }
 
-    private fun serveLogPage(out: OutputStream) {
-        val logs = AppLogger.getLogs().reversed().joinToString("<br>")
-        val html = """
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset='utf-8'/>
-                <meta name='viewport' content='width=device-width, initial-scale=1'/>
-                <meta http-equiv='refresh' content='3'/>
-                <title>BoxStation - Nhật ký hệ thống</title>
-                <style>
-                    body { background: #0F172A; color: #F8FAFC; font-family: monospace; padding: 20px; }
-                    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-                    h2 { margin: 0; color: #38BDF8; font-family: system-ui; }
-                    .btn { background: #334155; color: #FFF; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-family: system-ui; }
-                    .log-box { background: #020617; border: 1px solid #1E293B; border-radius: 8px; padding: 16px; line-height: 1.7; font-size: 14px; max-height: 80vh; overflow-y: auto; }
-                </style>
-            </head>
-            <body>
-                <div class='header'>
-                    <h2>📋 BoxStation Logs</h2>
+    // --- 8. HEADER BAR HELPER ---
+    private fun renderHeaderBar(activeTab: String, title: String = "BoxStation", badge: String = "v1.0.4", icon: String = "📡"): String {
+        val navFiles = if (activeTab == "files") "btn btn-primary" else "btn btn-outline"
+        val navApps = if (activeTab == "apps") "btn btn-primary" else "btn btn-outline"
+        val navScreen = if (activeTab == "screen") "btn btn-primary" else "btn btn-outline"
+        val navInstall = if (activeTab == "install") "btn btn-accent" else "btn btn-outline"
+        val navLog = if (activeTab == "log") "btn btn-primary" else "btn btn-outline"
+
+        return """
+            <div class='header-bar'>
+                <div class='logo-title'>
+                    <span class='logo-icon'>$icon</span>
                     <div>
-                        <a href='/files' class='btn'>📂 Duyệt file</a>
-                        <a href='/log' class='btn' style='background: #06B6D4;'>🔄 Làm mới</a>
+                        <h1>$title</h1>
+                        <span class='badge'>FPT Box &amp; G2 Mini NAS $badge</span>
+                        <span class='badge' style='background: rgba(16, 185, 129, 0.15); color: #10B981; border-color: rgba(16, 185, 129, 0.3);'>⚡ 24/7 Headless</span>
                     </div>
                 </div>
-                <div class='log-box'>
-                    $logs
+                <div class='nav-actions'>
+                    <a href='/files' class='$navFiles'>📂 File</a>
+                    <a href='/apps' class='$navApps'>📱 Ứng dụng</a>
+                    <a href='/screen' class='$navScreen'>📸 Màn hình TV</a>
+                    <a href='/install' class='$navInstall'>📦 Cài APK</a>
+                    <a href='/log' class='$navLog'>📋 Log</a>
+                    <button onclick='confirmReboot()' class='btn btn-danger'>🔄 Reboot</button>
                 </div>
-            </body>
-            </html>
+            </div>
         """.trimIndent()
-        sendResponse(out, 200, "text/html; charset=utf-8", html.toByteArray())
+    }
+
+    // --- 9. APP MANAGER (DANH SÁCH & GỠ BỎ APP) ---
+    private fun serveAppsPage(out: OutputStream, showAll: Boolean) {
+        val apps = AppManagerHelper.getInstalledApps(context, showAll)
+        val html = StringBuilder()
+        html.append(getHtmlHead("BoxStation - Quản lý Ứng dụng"))
+        html.append("<div class='container'>")
+        html.append(renderHeaderBar("apps", "Quản lý Ứng dụng", "v1.0.4", "📱"))
+
+        val toggleUrl = if (showAll) "/apps" else "/apps?all=1"
+        val toggleText = if (showAll) "Chỉ xem app cài thêm" else "Xem tất cả (gồm hệ thống)"
+
+        html.append("""
+            <div class='browser-toolbar' style='border-radius: 10px 10px 0 0; margin-bottom: 0;'>
+                <div style='display: flex; align-items: center; gap: 12px; flex-wrap: wrap;'>
+                    <input type='text' id='appSearch' placeholder='🔍 Tìm tên hoặc package...' class='text-input' style='max-width: 280px; padding: 8px 12px;' onkeyup='filterApps()' />
+                    <span style='color: var(--text-muted); font-size: 13px;'>Tổng số: <b>${apps.size}</b> ứng dụng</span>
+                </div>
+                <div class='toolbar-btns'>
+                    <a href='$toggleUrl' class='btn btn-outline'>$toggleText</a>
+                    <a href='/install' class='btn btn-accent'>📦 Cài APK mới</a>
+                </div>
+            </div>
+
+            <div class='table-responsive'>
+                <table class='file-table'>
+                    <thead>
+                        <tr>
+                            <th>Ứng dụng</th>
+                            <th class='col-desktop' style='width: 140px;'>Phiên bản</th>
+                            <th class='col-desktop' style='width: 120px;'>Dung lượng</th>
+                            <th style='width: 170px; text-align: right;'>Thao tác</th>
+                        </tr>
+                    </thead>
+                    <tbody id='appsTableBody'>
+        """.trimIndent())
+
+        if (apps.isEmpty()) {
+            html.append("<tr><td colspan='4' style='text-align:center; padding: 32px; color: var(--text-muted);'>Không tìm thấy ứng dụng nào</td></tr>")
+        } else {
+            for (app in apps) {
+                val encPkg = URLEncoder.encode(app.packageName, "UTF-8")
+                val safeName = app.name.replace("'", "\\'")
+                val sysBadge = if (app.isSystem) "<span class='badge' style='background: rgba(148, 163, 184, 0.15); color: #94A3B8; font-size: 10px; margin-left: 6px;'>Hệ thống</span>" else ""
+                val subText = "${app.packageName} • v${app.versionName} • ${app.sizeFormatted}"
+
+                html.append("""
+                    <tr class='file-row app-item' data-search='${app.name.lowercase(Locale.ROOT)} ${app.packageName.lowercase(Locale.ROOT)}'>
+                        <td>
+                            <div class='file-cell'>
+                                <img src='/api/app-icon?pkg=$encPkg' alt='${app.name}' style='width: 42px; height: 42px; border-radius: 9px; flex-shrink: 0; background: #1e293b; object-fit: contain;' onerror="this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'42\' height=\'42\'><rect width=\'42\' height=\'42\' fill=\'%23334155\' rx=\'9\'/></svg>'" />
+                                <div class='item-meta-wrap'>
+                                    <div class='item-title'>${app.name} $sysBadge</div>
+                                    <div class='item-sub-mobile'>$subText</div>
+                                </div>
+                            </div>
+                        </td>
+                        <td class='col-desktop' style='font-family: monospace; font-size: 13px;'>v${app.versionName}</td>
+                        <td class='col-desktop'>${app.sizeFormatted}</td>
+                        <td class='file-actions' onclick='event.stopPropagation()'>
+                            <button onclick="launchApp('$encPkg', '$safeName')" class='btn-sm btn-primary'>🚀 Mở</button>
+                """.trimIndent())
+
+                if (!app.isSystem && app.packageName != context.packageName) {
+                    html.append("""
+                        <button onclick="uninstallApp('$encPkg', '$safeName')" class='btn-sm btn-danger'>🗑️ Gỡ</button>
+                    """.trimIndent())
+                }
+
+                html.append("</td></tr>")
+            }
+        }
+
+        html.append("""
+                    </tbody>
+                </table>
+            </div>
+
+            <script>
+                function filterApps() {
+                    const q = document.getElementById('appSearch').value.toLowerCase();
+                    const rows = document.querySelectorAll('.app-item');
+                    rows.forEach(r => {
+                        const txt = r.getAttribute('data-search') || '';
+                        r.style.display = txt.includes(q) ? '' : 'none';
+                    });
+                }
+
+                function launchApp(pkgEnc, name) {
+                    fetch('/api/app/launch', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                        body: 'pkg=' + pkgEnc
+                    }).then(r => r.json()).then(res => {
+                        alert(res.message);
+                    });
+                }
+
+                function uninstallApp(pkgEnc, name) {
+                    if (!confirm('Xác nhận gỡ bỏ ứng dụng "' + name + '" khỏi TV?\n(Dịch vụ Trợ năng sẽ tự động xác nhận trên màn hình)')) return;
+                    fetch('/api/app/uninstall', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                        body: 'pkg=' + pkgEnc
+                    }).then(r => r.json()).then(res => {
+                        alert(res.message);
+                        setTimeout(() => location.reload(), 1500);
+                    });
+                }
+            </script>
+        """.trimIndent())
+
+        html.append("</div></body></html>")
+        sendResponse(out, 200, "text/html; charset=utf-8", html.toString().toByteArray(StandardCharsets.UTF_8))
+    }
+
+    private fun serveAppsJson(out: OutputStream, showAll: Boolean) {
+        val apps = AppManagerHelper.getInstalledApps(context, showAll)
+        val sb = StringBuilder("[")
+        apps.forEachIndexed { i, a ->
+            if (i > 0) sb.append(",")
+            sb.append("""{"name":"${a.name.replace("\"", "\\\"")}","package":"${a.packageName}","version":"${a.versionName}","size":"${a.sizeFormatted}","isSystem":${a.isSystem}}""")
+        }
+        sb.append("]")
+        sendResponse(out, 200, "application/json", sb.toString().toByteArray())
+    }
+
+    private fun serveAppIcon(out: OutputStream, pkg: String?) {
+        if (pkg.isNullOrEmpty()) {
+            sendResponse(out, 400, "text/plain", "Missing pkg".toByteArray())
+            return
+        }
+        val bytes = AppManagerHelper.getAppIcon(context, pkg)
+        if (bytes != null) {
+            sendResponse(out, 200, "image/png", bytes, listOf("Cache-Control: public, max-age=86400"))
+        } else {
+            sendResponse(out, 404, "text/plain", "Icon not found".toByteArray())
+        }
+    }
+
+    private fun handleAppLaunch(input: InputStream, out: OutputStream, headers: Map<String, String>) {
+        val body = readBodyString(input, headers)
+        val params = parseQueryParams(body)
+        val pkg = params["pkg"]
+        if (pkg.isNullOrEmpty()) {
+            sendResponse(out, 400, "application/json", """{"success":false,"message":"Thiếu package name"}""".toByteArray())
+            return
+        }
+        val (ok, msg) = AppManagerHelper.launchApp(context, pkg)
+        val json = """{"success":$ok,"message":"${msg.replace("\"", "\\\"")}"}"""
+        sendResponse(out, 200, "application/json", json.toByteArray())
+    }
+
+    private fun handleAppUninstall(input: InputStream, out: OutputStream, headers: Map<String, String>) {
+        val body = readBodyString(input, headers)
+        val params = parseQueryParams(body)
+        val pkg = params["pkg"]
+        if (pkg.isNullOrEmpty()) {
+            sendResponse(out, 400, "application/json", """{"success":false,"message":"Thiếu package name"}""".toByteArray())
+            return
+        }
+        val (ok, msg) = AppManagerHelper.uninstallApp(context, pkg)
+        val json = """{"success":$ok,"message":"${msg.replace("\"", "\\\"")}"}"""
+        sendResponse(out, 200, "application/json", json.toByteArray())
+    }
+
+    // --- 10. SCREENSHOT CAPTURE (CHỤP MÀN HÌNH TV TỪ XA) ---
+    private fun serveScreenPage(out: OutputStream) {
+        val html = StringBuilder()
+        html.append(getHtmlHead("BoxStation - Màn hình TV từ xa"))
+        html.append("<div class='container'>")
+        html.append(renderHeaderBar("screen", "Màn hình TV từ xa", "v1.0.4", "📸"))
+
+        val isAccEnabled = AutoInstallService.isServiceEnabled
+        val statusBadge = if (isAccEnabled) {
+            "<div class='alert' style='background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); color: #10B981; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px;'>🟢 <b>Trợ năng đang hoạt động:</b> Ảnh chụp màn hình phần cứng TV trực tiếp theo thời gian thực!</div>"
+        } else {
+            "<div class='alert' style='background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.3); color: #F59E0B; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px;'>🟡 <b>Chưa bật Trợ năng:</b> Để chụp màn hình TV từ xa, vui lòng mở BoxStation trên TV và bấm 'Bật Auto-Click (Trợ năng)'.</div>"
+        }
+        html.append(statusBadge)
+
+        html.append("""
+            <div class='browser-toolbar' style='border-radius: 10px; margin-bottom: 16px;'>
+                <div style='display: flex; gap: 10px; align-items: center; flex-wrap: wrap;'>
+                    <button onclick='refreshScreen()' class='btn btn-primary'>📸 Chụp lại ngay</button>
+                    <button onclick='toggleAuto(this)' id='btnAuto' class='btn btn-outline'>⏱️ Tự động làm mới (Tắt)</button>
+                </div>
+                <div class='toolbar-btns'>
+                    <a id='btnDownload' href='/api/screenshot' download='tv_screen.jpg' class='btn btn-accent'>💾 Tải ảnh về</a>
+                </div>
+            </div>
+
+            <div style='background: #020617; border: 2px solid #334155; border-radius: 14px; padding: 12px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.6);'>
+                <img id='tvScreen' src='/api/screenshot' alt='Màn hình TV' style='max-width: 100%; max-height: 75vh; border-radius: 8px; object-fit: contain; background: #000;' />
+                <div id='screenMeta' style='color: var(--text-muted); font-size: 12px; margin-top: 8px;'>Ảnh chụp màn hình thực tế từ Box</div>
+            </div>
+
+            <script>
+                let autoTimer = null;
+
+                function refreshScreen() {
+                    const img = document.getElementById('tvScreen');
+                    const t = Date.now();
+                    img.src = '/api/screenshot?t=' + t;
+                    document.getElementById('btnDownload').href = '/api/screenshot?t=' + t;
+                    document.getElementById('screenMeta').innerText = 'Cập nhật lúc: ' + new Date().toLocaleTimeString();
+                }
+
+                function toggleAuto(btn) {
+                    if (autoTimer) {
+                        clearInterval(autoTimer);
+                        autoTimer = null;
+                        btn.innerText = '⏱️ Tự động làm mới (Tắt)';
+                        btn.classList.remove('btn-primary');
+                        btn.classList.add('btn-outline');
+                    } else {
+                        autoTimer = setInterval(refreshScreen, 2000);
+                        btn.innerText = '⏱️ Đang tự làm mới (mỗi 2s)';
+                        btn.classList.remove('btn-outline');
+                        btn.classList.add('btn-primary');
+                    }
+                }
+            </script>
+        """.trimIndent())
+
+        html.append("</div></body></html>")
+        sendResponse(out, 200, "text/html; charset=utf-8", html.toString().toByteArray(StandardCharsets.UTF_8))
+    }
+
+    private fun serveScreenshotImage(out: OutputStream) {
+        var bmp: Bitmap? = null
+
+        // 1. Thử qua AccessibilityService.takeScreenshot nếu có
+        val service = AutoInstallService.instance
+        if (service != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val latch = CountDownLatch(1)
+            service.takeScreenCapture { captured ->
+                bmp = captured
+                latch.countDown()
+            }
+            try {
+                latch.await(3500, TimeUnit.MILLISECONDS)
+            } catch (e: Exception) {}
+        }
+
+        // 2. Thử fallback qua screencap shell nếu chưa có
+        if (bmp == null) {
+            try {
+                val cacheFile = File(context.cacheDir, "screen_capture.png")
+                val p = Runtime.getRuntime().exec(arrayOf("screencap", "-p", cacheFile.absolutePath))
+                p.waitFor()
+                if (cacheFile.exists() && cacheFile.length() > 0) {
+                    bmp = BitmapFactory.decodeFile(cacheFile.absolutePath)
+                    cacheFile.delete()
+                }
+            } catch (e: Exception) {}
+        }
+
+        if (bmp != null) {
+            val baos = ByteArrayOutputStream()
+            bmp?.compress(Bitmap.CompressFormat.JPEG, 85, baos)
+            val bytes = baos.toByteArray()
+            sendResponse(out, 200, "image/jpeg", bytes, listOf(
+                "Cache-Control: no-cache, no-store, must-revalidate",
+                "Pragma: no-cache",
+                "Expires: 0"
+            ))
+        } else {
+            val svg = """
+                <svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450">
+                    <rect width="800" height="450" fill="#0F172A"/>
+                    <circle cx="400" cy="180" r="48" fill="#1E293B" stroke="#334155" stroke-width="2"/>
+                    <text x="400" y="195" font-family="sans-serif" font-size="36" fill="#06B6D4" text-anchor="middle">📸</text>
+                    <text x="400" y="270" font-family="sans-serif" font-size="20" font-weight="bold" fill="#F8FAFC" text-anchor="middle">Chưa thể chụp màn hình TV</text>
+                    <text x="400" y="305" font-family="sans-serif" font-size="14" fill="#94A3B8" text-anchor="middle">Vui lòng đảm bảo dịch vụ Trợ năng BoxStation đã được BẬT trên TV.</text>
+                </svg>
+            """.trimIndent()
+            sendResponse(out, 200, "image/svg+xml", svg.toByteArray(StandardCharsets.UTF_8), listOf(
+                "Cache-Control: no-cache, no-store, must-revalidate"
+            ))
+        }
+    }
+
+    // --- 11. LOG VIEWER ---
+    private fun serveLogPage(out: OutputStream) {
+        val logs = AppLogger.getLogs().reversed().joinToString("<br>")
+        val html = StringBuilder()
+        html.append(getHtmlHead("BoxStation - Nhật ký hệ thống"))
+        html.append("<div class='container'>")
+        html.append(renderHeaderBar("log", "Nhật ký hệ thống", "v1.0.4", "📋"))
+        html.append("""
+            <div class='browser-toolbar' style='border-radius: 10px; margin-bottom: 16px;'>
+                <span style='color: var(--text-muted); font-size: 13px;'>Tự động làm mới mỗi 3 giây</span>
+                <div class='toolbar-btns'>
+                    <a href='/log' class='btn btn-primary'>🔄 Làm mới ngay</a>
+                </div>
+            </div>
+            <div class='log-box' style='background: #020617; border: 1px solid #1E293B; border-radius: 10px; padding: 16px; line-height: 1.7; font-size: 13.5px; font-family: monospace; max-height: 75vh; overflow-y: auto;'>
+                $logs
+            </div>
+            <script>setTimeout(() => location.reload(), 3000);</script>
+            </div></body></html>
+        """.trimIndent())
+        sendResponse(out, 200, "text/html; charset=utf-8", html.toString().toByteArray(StandardCharsets.UTF_8))
     }
 
     private fun readBodyString(input: InputStream, headers: Map<String, String>): String {

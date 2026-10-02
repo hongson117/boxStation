@@ -2,10 +2,13 @@ package vn.lienson.boxstation
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.graphics.Bitmap
 import android.os.Build
 import android.provider.Settings
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.core.content.ContextCompat
 
 class AutoInstallService : AccessibilityService() {
 
@@ -13,9 +16,14 @@ class AutoInstallService : AccessibilityService() {
         var isServiceEnabled = false
             private set
 
+        var instance: AutoInstallService? = null
+            private set
+
         private val TARGET_TEXTS = listOf(
             "cài đặt", "cập nhật", "tiếp tục", "cho phép", "xong", "mở",
-            "install", "update", "continue", "allow", "done", "open"
+            "gỡ cài đặt", "gỡ bỏ", "đồng ý", "xác nhận",
+            "install", "update", "continue", "allow", "done", "open",
+            "uninstall", "ok", "delete"
         )
 
         private val TARGET_VIEW_IDS = listOf(
@@ -57,8 +65,41 @@ class AutoInstallService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        instance = this
         isServiceEnabled = true
-        AppLogger.i("AUTO-CLICK", "🟢 [TRỢ NĂNG HOẠT ĐỘNG] Dịch vụ tự động bấm Cài đặt đã kích hoạt thành công!")
+        AppLogger.i("AUTO-CLICK", "🟢 [TRỢ NĂNG HOẠT ĐỘNG] Dịch vụ tự động bấm Cài đặt / Gỡ bỏ đã kích hoạt thành công!")
+    }
+
+    fun takeScreenCapture(callback: (Bitmap?) -> Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val executor = ContextCompat.getMainExecutor(this)
+            takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                executor,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshotResult: ScreenshotResult) {
+                        try {
+                            val hardwareBuffer = screenshotResult.hardwareBuffer
+                            val colorSpace = screenshotResult.colorSpace
+                            val bitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, colorSpace)
+                            val copy = bitmap?.copy(Bitmap.Config.ARGB_8888, false)
+                            hardwareBuffer.close()
+                            callback(copy)
+                        } catch (e: Exception) {
+                            AppLogger.e("SCREENSHOT", "Lỗi convert hardware buffer: ${e.message}", e)
+                            callback(null)
+                        }
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        AppLogger.e("SCREENSHOT", "Lỗi chụp màn hình Accessibility: mã lỗi $errorCode")
+                        callback(null)
+                    }
+                }
+            )
+        } else {
+            callback(null)
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -141,6 +182,9 @@ class AutoInstallService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (instance == this) {
+            instance = null
+        }
         isServiceEnabled = false
         AppLogger.i("AUTO-CLICK", "🔴 Dịch vụ tự động bấm đã dừng")
     }
