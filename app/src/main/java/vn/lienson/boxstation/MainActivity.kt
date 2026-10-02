@@ -83,6 +83,9 @@ class MainActivity : AppCompatActivity() {
         // Thử kích hoạt AutoInstall qua shell ngầm nếu có quyền
         AutoInstallService.tryEnableViaShell()
 
+        // Tự động kiểm tra và yêu cầu cấp quyền đọc bộ nhớ / USB
+        requestAllStoragePermissions()
+
         startStationService()
     }
 
@@ -195,7 +198,24 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, "Không thể mở cài đặt Trợ năng.", Toast.LENGTH_SHORT).show()
     }
 
+    private fun requestAllStoragePermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val needed = mutableListOf<String>()
+            if (checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                needed.add(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+            }
+            if (checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                needed.add(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            }
+            if (needed.isNotEmpty()) {
+                requestPermissions(needed.toTypedArray(), 1001)
+                AppLogger.i("STORAGE", "📢 Đã gửi yêu cầu cấp quyền Storage: ${needed.joinToString()}")
+            }
+        }
+    }
+
     private fun checkAndRequestStoragePermission() {
+        requestAllStoragePermissions()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
                 try {
@@ -211,7 +231,7 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Ứng dụng đã có đầy đủ quyền đọc/ghi mọi ổ cứng!", Toast.LENGTH_SHORT).show()
             }
         } else {
-            Toast.makeText(this, "Android 10 trở xuống không cần cấp thêm quyền này.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Đã gửi yêu cầu quyền bộ nhớ!", Toast.LENGTH_SHORT).show()
         }
     }
 }

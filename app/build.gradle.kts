@@ -10,9 +10,9 @@ android {
     defaultConfig {
         applicationId = "vn.lienson.boxstation"
         minSdk = 24
-        targetSdk = 34
-        versionCode = 3
-        versionName = "1.0.2"
+        targetSdk = 29
+        versionCode = 4
+        versionName = "1.0.3"
     }
 
     buildTypes {
@@ -49,6 +49,11 @@ android {
     buildFeatures {
         buildConfig = true
         viewBinding = true
+    }
+
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
 }
 

@@ -173,12 +173,28 @@ object StorageManagerHelper {
         return drives
     }
 
-    fun listDirectory(dirPath: String): List<FileItem> {
+    fun listDirectory(dirPath: String, showHidden: Boolean = false): List<FileItem> {
         val dir = File(dirPath)
         if (!dir.exists() || !dir.isDirectory) return emptyList()
 
-        val files = dir.listFiles() ?: return emptyList()
-        return files.map { file ->
+        val files = dir.listFiles()
+        if (files == null) {
+            AppLogger.w("Storage", "⚠️ Không thể đọc thư mục '$dirPath' (canRead=${dir.canRead()}, exists=${dir.exists()}). Kiểm tra quyền bộ nhớ!")
+            return emptyList()
+        }
+
+        return files.filter { file ->
+            if (showHidden) true
+            else {
+                val name = file.name
+                !name.startsWith("$") &&
+                !name.startsWith(".") &&
+                !name.equals("System Volume Information", ignoreCase = true) &&
+                !name.equals("LOST.DIR", ignoreCase = true) &&
+                !name.equals("Thumbs.db", ignoreCase = true) &&
+                !name.equals("desktop.ini", ignoreCase = true)
+            }
+        }.map { file ->
             val ext = if (file.isDirectory) "" else file.extension.lowercase(Locale.ROOT)
             val isVid = VIDEO_EXTENSIONS.contains(ext)
             val isAud = AUDIO_EXTENSIONS.contains(ext)

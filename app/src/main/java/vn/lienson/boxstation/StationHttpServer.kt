@@ -1,6 +1,11 @@
 package vn.lienson.boxstation
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.Settings
 import java.io.*
 import java.net.ServerSocket
 import java.net.Socket
@@ -129,6 +134,11 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                     handleReboot(outputStream)
                 }
 
+                // Cấp quyền bộ nhớ
+                (method == "GET" || method == "POST") && path == "/api/open-storage-settings" -> {
+                    handleOpenStorageSettings(outputStream)
+                }
+
                 // Thực thi shell lệnh chẩn đoán
                 method == "GET" && path == "/api/sh" -> {
                     val cmd = queryParams["cmd"] ?: "uptime"
@@ -240,7 +250,7 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                     <span class='logo-icon'>📡</span>
                     <div>
                         <h1>BoxStation</h1>
-                        <span class='badge'>FPT Box &amp; G2 Mini NAS v1.0.1</span>
+                        <span class='badge'>FPT Box &amp; G2 Mini NAS v1.0.3</span>
                         <span class='badge' style='background: rgba(16, 185, 129, 0.15); color: #10B981; border-color: rgba(16, 185, 129, 0.3);'>⚡ Tự chạy 24/7 khi khởi động</span>
                     </div>
                 </div>
@@ -278,6 +288,18 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
             """.trimIndent())
         }
         html.append("</div>")
+
+        // Banner thông báo nếu chưa cấp toàn quyền bộ nhớ trên Android 11
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+            html.append("""
+                <div class='storage-banner'>
+                    <div class='banner-text'>
+                        💡 <b>Chế độ tương thích Android 11:</b> Đang dùng Legacy Storage. Nếu một số thư mục hệ thống chưa thấy đủ file, hãy bấm nút để mở trang cấp quyền trên TV.
+                    </div>
+                    <button onclick='requestStoragePermission()' class='btn-sm btn-accent'>🔑 Mở cấp quyền trên TV</button>
+                </div>
+            """.trimIndent())
+        }
 
         // Files Explorer Section
         if (currentPath.isNullOrEmpty() || currentPath == "/") {
@@ -325,10 +347,10 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                         <table class='file-table'>
                             <thead>
                                 <tr>
-                                    <th>Tên</th>
-                                    <th style='width: 120px;'>Kích thước</th>
-                                    <th style='width: 160px;'>Ngày cập nhật</th>
-                                    <th style='width: 220px; text-align: right;'>Thao tác</th>
+                                    <th>Tên mục</th>
+                                    <th class='col-desktop' style='width: 120px;'>Kích thước</th>
+                                    <th class='col-desktop' style='width: 160px;'>Ngày cập nhật</th>
+                                    <th style='width: 150px; text-align: right;'>Thao tác</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -336,15 +358,31 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
 
                 // Nút quay lại thư mục cha
                 if (parentPath != null && parentPath != "/storage" && parentPath != "/") {
+                    val encParent = URLEncoder.encode(parentPath, "UTF-8")
                     html.append("""
-                        <tr class='row-parent' onclick="location.href='/files?path=${URLEncoder.encode(parentPath, "UTF-8")}'">
-                            <td colspan='4'>📁 <b>.. (Thư mục cha)</b></td>
+                        <tr class='row-parent file-row' onclick="location.href='/files?path=$encParent'">
+                            <td colspan='4'>
+                                <div class='file-cell'>
+                                    <span class='item-icon'>📁</span>
+                                    <div class='item-meta-wrap'>
+                                        <div class='item-title'><b>.. (Thư mục cha)</b></div>
+                                    </div>
+                                </div>
+                            </td>
                         </tr>
                     """.trimIndent())
                 }
 
                 if (files.isEmpty()) {
-                    html.append("<tr><td colspan='4' style='text-align:center; padding: 24px; color: var(--text-muted);'>Thư mục trống</td></tr>")
+                    html.append("""
+                        <tr>
+                            <td colspan='4' style='text-align:center; padding: 40px 16px; color: var(--text-muted);'>
+                                <div style='font-size: 36px; margin-bottom: 8px;'>📂</div>
+                                <div style='font-size: 15px; font-weight: 600; color: var(--text-white);'>Thư mục này hiện không có file khả dụng</div>
+                                <div style='font-size: 13px; margin-top: 6px; color: var(--text-muted);'>Hệ thống đã tự động lọc các thư mục rác Windows (${'$'}RECYCLE.BIN, System Volume Information...).</div>
+                            </td>
+                        </tr>
+                    """.trimIndent())
                 } else {
                     for (f in files) {
                         val encPath = URLEncoder.encode(f.path, "UTF-8")
@@ -357,42 +395,50 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                             else -> "📄"
                         }
 
+                        val safeName = f.name.replace("'", "\\'")
                         val rowClick = if (f.isDirectory) {
                             "location.href='/files?path=$encPath'"
                         } else if (f.isVideo || f.isAudio) {
-                            "playMedia('$encPath', '${f.name}', ${f.isVideo})"
+                            "playMedia('$encPath', '$safeName', ${f.isVideo})"
                         } else ""
 
+                        val subText = if (f.isDirectory) "Thư mục" else "${f.sizeFormatted} • ${f.dateFormatted}"
+
                         html.append("""
-                            <tr>
-                                <td class='file-name' onclick="$rowClick">
-                                    <span class='item-icon'>$icon</span>
-                                    <span class='item-title'>${f.name}</span>
+                            <tr class='file-row' onclick="$rowClick">
+                                <td>
+                                    <div class='file-cell'>
+                                        <span class='item-icon'>$icon</span>
+                                        <div class='item-meta-wrap'>
+                                            <div class='item-title'>${f.name}</div>
+                                            <div class='item-sub-mobile'>$subText</div>
+                                        </div>
+                                    </div>
                                 </td>
-                                <td>${f.sizeFormatted}</td>
-                                <td>${f.dateFormatted}</td>
-                                <td class='file-actions'>
+                                <td class='col-desktop'>${f.sizeFormatted}</td>
+                                <td class='col-desktop'>${f.dateFormatted}</td>
+                                <td class='file-actions' onclick='event.stopPropagation()'>
                         """.trimIndent())
 
                         if (f.isDirectory) {
                             html.append("""
                                 <a href='/files?path=$encPath' class='btn-sm btn-outline'>Mở</a>
-                                <button onclick="deleteItem('$encPath', '${f.name}', true)" class='btn-sm btn-danger'>Xóa</button>
+                                <button onclick="deleteItem('$encPath', '$safeName', true)" class='btn-sm btn-danger'>Xóa</button>
                             """.trimIndent())
                         } else {
                             if (f.isVideo || f.isAudio) {
                                 html.append("""
-                                    <button onclick="playMedia('$encPath', '${f.name}', ${f.isVideo})" class='btn-sm btn-primary'>Phát</button>
+                                    <button onclick="playMedia('$encPath', '$safeName', ${f.isVideo})" class='btn-sm btn-primary'>Phát</button>
                                 """.trimIndent())
                             }
                             if (f.isApk) {
                                 html.append("""
-                                    <button onclick="installLocalApk('$encPath', '${f.name}')" class='btn-sm btn-accent'>Cài APK</button>
+                                    <button onclick="installLocalApk('$encPath', '$safeName')" class='btn-sm btn-accent'>Cài APK</button>
                                 """.trimIndent())
                             }
                             html.append("""
                                 <a href='/download?path=$encPath' class='btn-sm btn-outline' download>Tải về</a>
-                                <button onclick="deleteItem('$encPath', '${f.name}', false)" class='btn-sm btn-danger'>Xóa</button>
+                                <button onclick="deleteItem('$encPath', '$safeName', false)" class='btn-sm btn-danger'>Xóa</button>
                             """.trimIndent())
                         }
 
@@ -899,7 +945,32 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
             </body>
             </html>
         """.trimIndent()
-        sendResponse(out, 200, "text/html; charset=utf-8", html.toByteArray())
+    }
+
+    private fun handleOpenStorageSettings(out: OutputStream) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                try {
+                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                }
+                AppLogger.i("STORAGE", "📱 Đã gửi Intent mở màn hình cài đặt All Files Access trên TV")
+                sendResponse(out, 200, "application/json", """{"success":true,"message":"Đã kích hoạt màn hình cấp quyền trên TV!"}""".toByteArray())
+            } else {
+                sendResponse(out, 200, "application/json", """{"success":true,"message":"Android 10 trở xuống tự động có quyền."}""".toByteArray())
+            }
+        } catch (e: Exception) {
+            AppLogger.e("STORAGE", "Lỗi mở màn hình quyền: ${e.message}", e)
+            sendResponse(out, 500, "application/json", """{"success":false,"message":"Lỗi: ${e.message}"}""".toByteArray())
+        }
     }
 
     // --- 7. STATUS & LOG ---
@@ -1107,6 +1178,7 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                         border-top: none;
                         border-radius: 0 0 10px 10px;
                         overflow-x: auto;
+                        -webkit-overflow-scrolling: touch;
                     }
                     .file-table { width: 100%; border-collapse: collapse; text-align: left; }
                     .file-table th {
@@ -1122,13 +1194,40 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                         padding: 12px 16px;
                         font-size: 14px;
                         border-bottom: 1px solid #243247;
+                        vertical-align: middle;
                     }
-                    .file-table tr:hover { background: #233149; }
-                    .file-name { cursor: pointer; display: flex; align-items: center; gap: 10px; }
-                    .item-icon { font-size: 20px; }
-                    .item-title { font-weight: 500; word-break: break-all; }
-                    .file-actions { text-align: right; display: flex; gap: 6px; justify-content: flex-end; }
+                    .file-row { cursor: pointer; transition: background 0.15s ease; }
+                    .file-row:hover { background: #233149; }
+                    .file-cell { display: flex; align-items: center; gap: 12px; min-width: 0; }
+                    .item-icon { font-size: 24px; flex-shrink: 0; }
+                    .item-meta-wrap { min-width: 0; flex: 1; }
+                    .item-title {
+                        font-weight: 500;
+                        font-size: 14.5px;
+                        color: #F8FAFC;
+                        word-break: break-word;
+                        overflow-wrap: break-word;
+                        white-space: normal;
+                        line-height: 1.4;
+                    }
+                    .item-sub-mobile { display: none; font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+                    .file-actions { text-align: right; white-space: nowrap; }
+                    .file-actions .btn-sm { margin-left: 4px; }
                     .row-parent { background: #131d2e; cursor: pointer; }
+
+                    .storage-banner {
+                        background: rgba(245, 158, 11, 0.12);
+                        border: 1px solid rgba(245, 158, 11, 0.35);
+                        border-radius: 10px;
+                        padding: 12px 16px;
+                        margin-bottom: 20px;
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        gap: 12px;
+                        flex-wrap: wrap;
+                    }
+                    .banner-text { font-size: 13.5px; color: #FBBF24; line-height: 1.5; }
 
                     /* Content box */
                     .content-box {
@@ -1197,6 +1296,44 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                         font-size: 14px;
                     }
                     .form-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+                    /* Responsive CSS for Mobile Screens */
+                    @media (max-width: 768px) {
+                        .container { padding: 12px; }
+                        .header-bar { flex-direction: column; align-items: flex-start; gap: 12px; margin-bottom: 16px; }
+                        .nav-actions { width: 100%; justify-content: flex-start; }
+                        .drives-grid { grid-template-columns: 1fr; gap: 12px; margin-bottom: 16px; }
+                        .browser-toolbar { flex-direction: column; align-items: flex-start; gap: 10px; padding: 12px; }
+                        .toolbar-btns { width: 100%; justify-content: flex-start; }
+
+                        /* Ẩn các cột Kích thước và Ngày cập nhật trên điện thoại */
+                        .col-desktop {
+                            display: none !important;
+                        }
+                        .item-sub-mobile {
+                            display: block !important;
+                        }
+                        .file-table td {
+                            padding: 10px 12px;
+                        }
+                        .file-cell {
+                            gap: 10px;
+                        }
+                        .item-title {
+                            font-size: 14px;
+                        }
+                        .item-icon {
+                            font-size: 22px;
+                        }
+                        .file-actions {
+                            padding-left: 4px !important;
+                            padding-right: 8px !important;
+                        }
+                        .btn-sm {
+                            padding: 5px 8px;
+                            font-size: 11.5px;
+                        }
+                    }
                 </style>
             </head>
             <body>
@@ -1280,6 +1417,13 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                     const container = document.getElementById('mediaPlayerContainer');
                     container.innerHTML = '';
                     modal.style.display = 'none';
+                }
+
+                function requestStoragePermission() {
+                    fetch('/api/open-storage-settings', { method: 'POST' })
+                        .then(r => r.json())
+                        .then(res => alert(res.message))
+                        .catch(e => alert('Lỗi gửi lệnh tới Box'));
                 }
             </script>
         """.trimIndent()
