@@ -1,5 +1,6 @@
 package vn.lienson.boxstation
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -193,6 +194,9 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                 (method == "GET" || method == "POST") && path == "/api/remote" -> {
                     handleRemoteControl(outputStream, queryParams["key"])
                 }
+                (method == "GET" || method == "POST") && path == "/api/click" -> {
+                    handleClickApi(outputStream, queryParams)
+                }
 
                 // Tự động Reboot 03:00 sáng & Reboot thủ công
                 (method == "GET" || method == "POST") && path == "/api/auto-reboot" -> {
@@ -202,9 +206,24 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                     handleReboot(outputStream)
                 }
 
+                // FPT Shield: Bật/tắt cách ly cơ chế khóa box FPT
+                (method == "GET" || method == "POST") && path == "/api/fpt-shield" -> {
+                    handleFptShieldConfig(outputStream, queryParams)
+                }
+
                 // Cấp quyền bộ nhớ
                 (method == "GET" || method == "POST") && path == "/api/open-storage-settings" -> {
                     handleOpenStorageSettings(outputStream)
+                }
+
+                // Kiểm tra & Mở ADB / Developer Settings
+                (method == "GET" || method == "POST") && path == "/api/adb-test" -> {
+                    handleAdbTest(outputStream)
+                }
+
+                // Mở Activity hệ thống linh hoạt
+                (method == "GET" || method == "POST") && path == "/api/open-activity" -> {
+                    handleOpenActivity(outputStream, queryParams["target"])
                 }
 
                 // Thực thi shell lệnh chẩn đoán
@@ -1059,6 +1078,106 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
         }
     }
 
+    private fun handleAdbTest(out: OutputStream) {
+        val cr = context.contentResolver
+        val pm = context.packageManager
+
+        val devSettingsEnabled = try {
+            Settings.Global.getInt(cr, "development_settings_enabled", -1)
+        } catch (e: Exception) { -2 }
+
+        val adbEnabledGlobal = try {
+            Settings.Global.getInt(cr, Settings.Global.ADB_ENABLED, -1)
+        } catch (e: Exception) { -2 }
+
+        val adbEnabledSecure = try {
+            Settings.Secure.getInt(cr, "adb_enabled", -1)
+        } catch (e: Exception) { -2 }
+
+        // Test direct write
+        var directPutResult = "OK"
+        try {
+            Settings.Global.putInt(cr, Settings.Global.ADB_ENABLED, 1)
+        } catch (e: Exception) {
+            directPutResult = "${e.javaClass.simpleName}: ${e.message}"
+        }
+
+        // Test Activities
+        val testIntents = listOf(
+            "ACTION_APPLICATION_DEVELOPMENT_SETTINGS" to Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
+            "ACTION_DEVICE_INFO_SETTINGS" to Intent(Settings.ACTION_DEVICE_INFO_SETTINGS),
+            "ACTION_SETTINGS" to Intent(Settings.ACTION_SETTINGS)
+        )
+
+        val resolvedList = mutableListOf<String>()
+        var openedActivity: String? = null
+        for ((name, intent) in testIntents) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val resolves = pm.queryIntentActivities(intent, 0)
+            val count = resolves.size
+            val matchedNames = resolves.map { it.activityInfo.name }
+            resolvedList.add("\"$name\":{\"count\":$count,\"activities\":[${matchedNames.joinToString(",") { "\"$it\"" }}]}")
+            if (openedActivity == null && count > 0) {
+                try {
+                    context.startActivity(intent)
+                    openedActivity = "$name -> ${matchedNames.firstOrNull()}"
+                } catch (e: Exception) {
+                    // pass
+                }
+            }
+        }
+
+        // Check com.android.tv.settings package activities
+        val pkgActivities = try {
+            val pkgInfo = pm.getPackageInfo("com.android.tv.settings", android.content.pm.PackageManager.GET_ACTIVITIES)
+            pkgInfo.activities?.map { it.name } ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        val json = StringBuilder()
+        json.append("{")
+        json.append("\"development_settings_enabled\":$devSettingsEnabled,")
+        json.append("\"adb_enabled_global\":$adbEnabledGlobal,")
+        json.append("\"adb_enabled_secure\":$adbEnabledSecure,")
+        json.append("\"direct_put_error\":\"${directPutResult.replace("\"", "\\\"")}\",")
+        json.append("\"opened_activity\":\"${openedActivity ?: "none"}\",")
+        json.append("\"intents\":{${resolvedList.joinToString(",")}},")
+        json.append("\"tv_settings_activities\":[${pkgActivities.joinToString(",") { "\"$it\"" }}]")
+        json.append("}")
+
+        sendResponse(out, 200, "application/json", json.toString().toByteArray(StandardCharsets.UTF_8))
+    }
+
+    private fun handleOpenActivity(out: OutputStream, target: String?) {
+        val t = target?.trim() ?: ""
+        val intent = when {
+            t.equals("about", ignoreCase = true) -> Intent(Settings.ACTION_DEVICE_INFO_SETTINGS)
+            t.equals("dev", ignoreCase = true) -> Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+            t.equals("accessibility", ignoreCase = true) -> Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            t.equals("accessibility_oem", ignoreCase = true) -> Intent("android.settings.ACCESSIBILITY_TV_OEM_LINK").setPackage("com.android.tv.settings")
+            t.equals("adb_pwd", ignoreCase = true) -> Intent().setComponent(ComponentName("com.android.tv.settings", "com.android.tv.settings.vendor.util.AdbPasswordActivity"))
+            t.equals("settings", ignoreCase = true) -> Intent(Settings.ACTION_SETTINGS)
+            t.equals("main", ignoreCase = true) -> Intent().setComponent(ComponentName("com.android.tv.settings", "com.android.tv.settings.MainSettings"))
+            t.startsWith("action:", ignoreCase = true) -> Intent(t.substringAfter("action:"))
+            t.contains("/") -> {
+                val p = t.substringBefore("/")
+                val c = t.substringAfter("/")
+                Intent().setComponent(ComponentName(p, c))
+            }
+            else -> Intent(Settings.ACTION_SETTINGS)
+        }.apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+
+        try {
+            context.startActivity(intent)
+            sendResponse(out, 200, "application/json", """{"success":true,"opened":"$target"}""".toByteArray())
+        } catch (e: Exception) {
+            sendResponse(out, 500, "application/json", """{"success":false,"error":"${e.javaClass.simpleName}: ${e.message}"}""".toByteArray())
+        }
+    }
+
     // --- 7. STATUS & LOG ---
     private fun serveStatusJson(out: OutputStream) {
         val sys = SystemManagerHelper.getSystemInfo(context)
@@ -1084,6 +1203,7 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
         }
         sb.append("},")
         sb.append("\"autoReboot\":{\"enabled\":${AutoRebootHelper.isEnabled(context)},\"schedule\":\"${AutoRebootHelper.getStatusString(context)}\"},")
+        sb.append("\"fptShield\":{\"supported\":${FptShieldHelper.isFptDevice()},\"enabled\":${FptShieldHelper.isEnabled(context)},\"blockedCount\":${FptShieldHelper.getBlockedCount(context)},\"status\":\"${FptShieldHelper.getStatusString(context)}\"},")
         sb.append("\"appVersion\":\"v${BuildConfig.VERSION_NAME}\"")
         sb.append("}")
         sendResponse(out, 200, "application/json", sb.toString().toByteArray())
@@ -1097,6 +1217,15 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
         val navInstall = if (activeTab == "install") "btn btn-accent" else "btn btn-outline"
         val navLog = if (activeTab == "log") "btn btn-primary" else "btn btn-outline"
 
+        val fptShieldBadge = if (FptShieldHelper.isFptDevice()) {
+            val en = FptShieldHelper.isEnabled(context)
+            val color = if (en) "#10B981" else "#94A3B8"
+            val bg = if (en) "rgba(16, 185, 129, 0.15)" else "rgba(148, 163, 184, 0.15)"
+            val border = if (en) "rgba(16, 185, 129, 0.3)" else "rgba(148, 163, 184, 0.3)"
+            val text = if (en) "🛡️ Trạm Siêu Nhẹ: BẬT" else "🛡️ Trạm Siêu Nhẹ: TẮT"
+            """<button onclick='toggleFptShield()' class='badge' style='cursor:pointer; background: $bg; color: $color; border: 1px solid $border;' title='Bấm để Bật/Tắt chế độ Trạm Siêu Nhẹ: Đóng băng toàn bộ FPT Play, Truyền hình, Phim ảnh, Nhận dạng giọng nói để giải phóng RAM tối đa'>$text</button>"""
+        } else ""
+
         return """
             <div class='header-bar'>
                 <div class='logo-title'>
@@ -1106,6 +1235,7 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                         <span class='badge'>FPT Box &amp; G2 Mini NAS $badge</span>
                         <span class='badge' style='background: rgba(16, 185, 129, 0.15); color: #10B981; border-color: rgba(16, 185, 129, 0.3);'>⚡ 24/7 Headless</span>
                         <span class='badge' style='background: rgba(245, 158, 11, 0.15); color: #F59E0B; border-color: rgba(245, 158, 11, 0.3);'>⏰ Reboot 03:00 Sáng</span>
+                        $fptShieldBadge
                     </div>
                 </div>
                 <div class='nav-actions'>
@@ -1302,11 +1432,11 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
         val html = StringBuilder()
         html.append(getHtmlHead("BoxStation - Màn hình TV từ xa"))
         html.append("<div class='container'>")
-        html.append(renderHeaderBar("screen", "Màn hình TV từ xa", "v1.0.4", "📸"))
+        html.append(renderHeaderBar("screen", "Màn hình TV từ xa", "v1.0.8", "📸"))
 
         val isAccEnabled = AutoInstallService.isServiceEnabled
         val statusBadge = if (isAccEnabled) {
-            "<div class='alert' style='background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); color: #10B981; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px;'>🟢 <b>Trợ năng đang hoạt động:</b> Ảnh chụp màn hình phần cứng TV trực tiếp theo thời gian thực!</div>"
+            "<div class='alert' style='background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); color: #10B981; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px;'>🟢 <b>Trợ năng đang hoạt động:</b> Chụp màn hình TV và chạm tương tác trực tiếp theo thời gian thực!</div>"
         } else {
             "<div class='alert' style='background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.3); color: #F59E0B; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px;'>🟡 <b>Chưa bật Trợ năng:</b> Để chụp màn hình TV từ xa, vui lòng mở BoxStation trên TV và bấm 'Bật Auto-Click (Trợ năng)'.</div>"
         }
@@ -1324,8 +1454,8 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
             </div>
 
             <div style='background: #020617; border: 2px solid #334155; border-radius: 14px; padding: 12px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.6);'>
-                <img id='tvScreen' src='/api/screenshot' alt='Màn hình TV' style='max-width: 100%; max-height: 70vh; border-radius: 8px; object-fit: contain; background: #000;' />
-                <div id='screenMeta' style='color: var(--text-muted); font-size: 12px; margin-top: 8px;'>Ảnh chụp màn hình thực tế từ Box</div>
+                <img id='tvScreen' src='/api/screenshot' alt='Màn hình TV' style='max-width: 100%; max-height: 70vh; border-radius: 8px; object-fit: contain; background: #000; cursor: crosshair;' title='Click vào ảnh để chạm màn hình TV' />
+                <div id='screenMeta' style='color: var(--text-muted); font-size: 12px; margin-top: 8px;'>💡 Click chuột vào ảnh để chạm trực tiếp màn hình TV! Cập nhật: vừa xong</div>
             </div>
 
             <!-- Virtual Remote Control Panel -->
@@ -1338,6 +1468,10 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                     <button onclick="sendKey('home')" class='btn-sm btn-primary'>🏠 Home</button>
                     <button onclick="sendKey('back')" class='btn-sm btn-outline'>🔙 Quay lại</button>
                     <button onclick="sendKey('recents')" class='btn-sm btn-outline'>📋 Đa nhiệm</button>
+                    <button onclick="sendKey('power')" class='btn-sm btn-outline' style='border-color: #F59E0B; color: #F59E0B;'>⚡ Menu Nguồn</button>
+                    <button onclick="sendKey('reboot')" class='btn-sm btn-danger' style='background: #DC2626;'>🔄 Khởi động lại Box</button>
+                </div>
+                <div style='display: flex; justify-content: center; gap: 8px; margin-bottom: 16px; flex-wrap: wrap;'>
                     <button onclick="sendKey('volup')" class='btn-sm btn-outline'>🔊 Vol +</button>
                     <button onclick="sendKey('voldown')" class='btn-sm btn-outline'>🔉 Vol -</button>
                     <button onclick="sendKey('mute')" class='btn-sm btn-outline'>🔇 Mute</button>
@@ -1371,7 +1505,7 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                     const t = Date.now();
                     img.src = '/api/screenshot?t=' + t;
                     document.getElementById('btnDownload').href = '/api/screenshot?t=' + t;
-                    document.getElementById('screenMeta').innerText = 'Cập nhật lúc: ' + new Date().toLocaleTimeString();
+                    document.getElementById('screenMeta').innerText = '💡 Click chuột vào ảnh để chạm màn hình TV! Cập nhật lúc: ' + new Date().toLocaleTimeString();
                 }
 
                 function toggleAuto(btn) {
@@ -1393,9 +1527,24 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                     fetch('/api/remote?key=' + k, {method: 'POST'})
                         .then(r => r.json())
                         .then(res => {
-                            setTimeout(refreshScreen, 350);
+                            setTimeout(refreshScreen, 400);
                         });
                 }
+
+                // Chạm trực tiếp màn hình TV khi click chuột vào ảnh
+                const screenImg = document.getElementById('tvScreen');
+                screenImg.addEventListener('click', function(e) {
+                    const rect = screenImg.getBoundingClientRect();
+                    const scaleX = 1920 / rect.width;
+                    const scaleY = 1080 / rect.height;
+                    const clickX = Math.round((e.clientX - rect.left) * scaleX);
+                    const clickY = Math.round((e.clientY - rect.top) * scaleY);
+                    fetch('/api/click?x=' + clickX + '&y=' + clickY, {method: 'POST'})
+                        .then(r => r.json())
+                        .then(res => {
+                            setTimeout(refreshScreen, 400);
+                        });
+                });
             </script>
         """.trimIndent())
 
@@ -1794,6 +1943,27 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                     }
                 }
 
+                function toggleFptShield() {
+                    fetch('/api/fpt-shield')
+                        .then(r => r.json())
+                        .then(data => {
+                            if (!data.supported) return alert('Tính năng này chỉ dành cho FPT Play Box!');
+                            const next = data.enabled ? 0 : 1;
+                            const msg = next 
+                                ? '🛡️ BẬT CHẾ ĐỘ TRẠM PHÁT SIÊU NHẸ:\nBoxStation sẽ tự động đóng băng toàn bộ dịch vụ FPT TV, Phim ảnh, Trợ lý giọng nói và các tiến trình rác để giải phóng RAM tối đa cho trạm phát AceStream 24/7.\n\nBạn có muốn BẬT không?' 
+                                : '🔄 ROLLBACK VỀ NGUYÊN BẢN:\nBoxStation sẽ ngừng đóng băng, trả về trạng thái mặc định của FPT 100%.\n\nBạn có muốn TẮT không?';
+                            if (confirm(msg)) {
+                                fetch('/api/fpt-shield?enabled=' + next)
+                                    .then(r => r.json())
+                                    .then(res => {
+                                        alert(res.message);
+                                        location.reload();
+                                    });
+                            }
+                        })
+                        .catch(e => alert('Lỗi kết nối FPT Shield: ' + e));
+                }
+
                 function openUploadModal() { document.getElementById('uploadModal').style.display = 'flex'; }
                 function closeUploadModal() { document.getElementById('uploadModal').style.display = 'none'; }
                 function openMkdirModal() { document.getElementById('mkdirModal').style.display = 'flex'; }
@@ -1917,6 +2087,19 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                 success = service?.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_POWER_DIALOG) ?: false
                 message = if (success) "Đã mở menu nguồn" else "Trợ năng chưa sẵn sàng"
             }
+            "reboot" -> {
+                if (service != null) {
+                    service.triggerRebootSequence { ok, msg ->
+                        AppLogger.i("REMOTE", "Reboot sequence: $ok - $msg")
+                    }
+                    success = true
+                    message = "Đang kích hoạt chuỗi Khởi động lại Box qua Trợ năng..."
+                } else {
+                    val (rbOk, rbMsg) = SystemManagerHelper.rebootBox(context)
+                    success = rbOk
+                    message = rbMsg
+                }
+            }
             "wake" -> {
                 try {
                     Runtime.getRuntime().exec(arrayOf("input", "keyevent", "224"))
@@ -1927,19 +2110,38 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
                 }
             }
             "up" -> {
+                service?.swipe(960f, 650f, 960f, 400f, 150)
                 try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "19")); success = true; message = "Up" } catch (e: Exception) {}
             }
             "down" -> {
-                try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "20")); success = true; message = "Down" } catch (e: Exception) {}
+                val rebootClicked = service?.clickText("Khởi động lại") ?: false
+                if (!rebootClicked) {
+                    service?.swipe(960f, 400f, 960f, 650f, 150)
+                    try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "20")); success = true; message = "Down" } catch (e: Exception) {}
+                } else {
+                    success = true
+                    message = "Đã bấm Khởi động lại trên Menu Nguồn!"
+                }
             }
             "left" -> {
+                service?.swipe(650f, 540f, 400f, 540f, 150)
                 try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "21")); success = true; message = "Left" } catch (e: Exception) {}
             }
             "right" -> {
+                service?.swipe(400f, 540f, 650f, 540f, 150)
                 try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "22")); success = true; message = "Right" } catch (e: Exception) {}
             }
             "enter" -> {
-                try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "66")); success = true; message = "OK" } catch (e: Exception) {}
+                val specialClick = service?.clickText("Khởi động lại") ?: false ||
+                                   service?.clickText("OK") ?: false ||
+                                   service?.clickText("Đồng ý") ?: false ||
+                                   service?.clickText("Xác nhận") ?: false
+                if (!specialClick) {
+                    try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "66")); success = true; message = "OK" } catch (e: Exception) {}
+                } else {
+                    success = true
+                    message = "OK (Đã bấm trực tiếp vào nút trên màn hình)"
+                }
             }
             "volup" -> {
                 try { Runtime.getRuntime().exec(arrayOf("input", "keyevent", "24")); success = true; message = "Vol+" } catch (e: Exception) {}
@@ -1959,6 +2161,49 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
         sendResponse(out, 200, "application/json", json.toByteArray(StandardCharsets.UTF_8))
     }
 
+    private fun handleClickApi(out: OutputStream, queryParams: Map<String, String>) {
+        val service = AutoInstallService.instance
+        if (service == null) {
+            val json = """{"success":false,"message":"Trợ năng chưa bật trên Box"}"""
+            sendResponse(out, 200, "application/json", json.toByteArray(StandardCharsets.UTF_8))
+            return
+        }
+
+        val text = queryParams["text"]
+        val xStr = queryParams["x"]
+        val yStr = queryParams["y"]
+        val startXStr = queryParams["startX"]
+        val startYStr = queryParams["startY"]
+        val endXStr = queryParams["endX"]
+        val endYStr = queryParams["endY"]
+
+        var success = false
+        var message = ""
+
+        if (!startXStr.isNullOrEmpty() && !startYStr.isNullOrEmpty() && !endXStr.isNullOrEmpty() && !endYStr.isNullOrEmpty()) {
+            val sx = startXStr.toFloatOrNull() ?: 0f
+            val sy = startYStr.toFloatOrNull() ?: 0f
+            val ex = endXStr.toFloatOrNull() ?: 0f
+            val ey = endYStr.toFloatOrNull() ?: 0f
+            val dur = queryParams["duration"]?.toLongOrNull() ?: 250L
+            success = service.swipe(sx, sy, ex, ey, dur)
+            message = if (success) "Đã vuốt ($sx, $sy) -> ($ex, $ey)" else "Lỗi vuốt màn hình"
+        } else if (!text.isNullOrEmpty()) {
+            success = service.clickText(text)
+            message = if (success) "Đã bấm '$text' thành công" else "Không tìm thấy nút có chữ '$text'"
+        } else if (!xStr.isNullOrEmpty() && !yStr.isNullOrEmpty()) {
+            val x = xStr.toFloatOrNull() ?: 0f
+            val y = yStr.toFloatOrNull() ?: 0f
+            success = service.clickAt(x, y)
+            message = if (success) "Đã chạm tọa độ ($x, $y)" else "Lỗi chạm tọa độ ($x, $y)"
+        } else {
+            message = "Thiếu tham số (text, x/y, hoặc startX/startY/endX/endY)"
+        }
+
+        val json = """{"success":$success,"message":"$message"}"""
+        sendResponse(out, 200, "application/json", json.toByteArray(StandardCharsets.UTF_8))
+    }
+
     private fun handleAutoRebootConfig(out: OutputStream, queryParams: Map<String, String>) {
         if (queryParams.containsKey("enabled")) {
             val enabled = queryParams["enabled"] == "1" || queryParams["enabled"]?.lowercase(Locale.ROOT) == "true"
@@ -1967,6 +2212,29 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
         val isEn = AutoRebootHelper.isEnabled(context)
         val status = AutoRebootHelper.getStatusString(context)
         val json = """{"enabled":$isEn,"status":"$status","schedule":"03:00 hàng ngày"}"""
+        sendResponse(out, 200, "application/json", json.toByteArray(StandardCharsets.UTF_8))
+    }
+
+    private fun handleFptShieldConfig(out: OutputStream, queryParams: Map<String, String>) {
+        val supported = FptShieldHelper.isFptDevice()
+        if (!supported) {
+            val json = """{"supported":false,"enabled":false,"status":"Không áp dụng","message":"Thiết bị này không phải FPT Play Box (Không áp dụng)"}"""
+            sendResponse(out, 200, "application/json", json.toByteArray(StandardCharsets.UTF_8))
+            return
+        }
+
+        if (queryParams.containsKey("enabled")) {
+            val enabled = queryParams["enabled"] == "1" || queryParams["enabled"]?.lowercase(Locale.ROOT) == "true"
+            FptShieldHelper.setEnabled(context, enabled)
+        }
+
+        val isEn = FptShieldHelper.isEnabled(context)
+        val status = FptShieldHelper.getStatusString(context)
+        val blockedCount = FptShieldHelper.getBlockedCount(context)
+        val msg = if (isEn) "Chế độ Trạm Siêu Nhẹ ĐANG BẬT: Đã đóng băng toàn bộ dịch vụ FPT TV, Phim ảnh, Giọng nói và giải phóng RAM tối đa!"
+                  else "Chế độ Trạm Siêu Nhẹ ĐÃ TẮT: Đã hoàn nguyên trạng thái nguyên bản 100%!"
+
+        val json = """{"supported":true,"enabled":$isEn,"blockedCount":$blockedCount,"status":"$status","message":"$msg"}"""
         sendResponse(out, 200, "application/json", json.toByteArray(StandardCharsets.UTF_8))
     }
 }

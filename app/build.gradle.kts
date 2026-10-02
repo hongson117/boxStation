@@ -11,8 +11,8 @@ android {
         applicationId = "vn.lienson.boxstation"
         minSdk = 24
         targetSdk = 29
-        versionCode = 7
-        versionName = "1.0.6"
+        versionCode = 12
+        versionName = "1.1.1"
     }
 
     buildTypes {

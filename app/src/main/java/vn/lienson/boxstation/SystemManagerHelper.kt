@@ -11,6 +11,7 @@ import java.io.InputStreamReader
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.util.*
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 data class SystemInfo(
@@ -84,7 +85,28 @@ object SystemManagerHelper {
     fun rebootBox(context: Context): Pair<Boolean, String> {
         AppLogger.i("System", "Nhận lệnh REBOOT thiết bị từ xa qua Web!")
 
-        // 1. Thử qua su -c reboot
+        // 1. Thử qua AccessibilityService Auto-Click Khởi Động Lại (chuẩn Android 11 không cần root)
+        val service = AutoInstallService.instance
+        if (service != null) {
+            var resultOk = false
+            var resultMsg = "Đang kích hoạt chuỗi Khởi động lại qua Trợ năng..."
+            val latch = CountDownLatch(1)
+            service.triggerRebootSequence { ok, msg ->
+                resultOk = ok
+                resultMsg = msg
+                latch.countDown()
+            }
+            try {
+                latch.await(3, TimeUnit.SECONDS)
+                if (resultOk) {
+                    return true to resultMsg
+                }
+            } catch (e: Exception) {
+                // tiếp tục fallback
+            }
+        }
+
+        // 2. Thử qua su -c reboot
         try {
             val proc = Runtime.getRuntime().exec(arrayOf("su", "-c", "reboot"))
             proc.waitFor(2, TimeUnit.SECONDS)
@@ -95,7 +117,7 @@ object SystemManagerHelper {
             // pass
         }
 
-        // 2. Thử qua setprop sys.powerctl reboot
+        // 3. Thử qua setprop sys.powerctl reboot
         try {
             val proc = Runtime.getRuntime().exec(arrayOf("setprop", "sys.powerctl", "reboot"))
             proc.waitFor(2, TimeUnit.SECONDS)
@@ -106,7 +128,7 @@ object SystemManagerHelper {
             // pass
         }
 
-        // 3. Thử lệnh reboot trực tiếp
+        // 4. Thử lệnh reboot trực tiếp
         try {
             val proc = Runtime.getRuntime().exec(arrayOf("reboot"))
             proc.waitFor(2, TimeUnit.SECONDS)
@@ -117,7 +139,7 @@ object SystemManagerHelper {
             // pass
         }
 
-        // 4. Thử qua PowerManager API
+        // 5. Thử qua PowerManager API
         try {
             val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
             pm?.reboot("remote_web_reboot")
@@ -126,7 +148,7 @@ object SystemManagerHelper {
             AppLogger.w("System", "PowerManager.reboot cần quyền hệ thống: ${e.message}")
         }
 
-        // 5. Thử qua shell svc power reboot
+        // 6. Thử qua shell svc power reboot
         try {
             Runtime.getRuntime().exec(arrayOf("svc", "power", "reboot"))
             return true to "Đang khởi động lại thiết bị (svc power)..."
@@ -134,17 +156,7 @@ object SystemManagerHelper {
             // pass
         }
 
-        // 6. Thử qua AccessibilityService.GLOBAL_ACTION_POWER_DIALOG
-        val service = AutoInstallService.instance
-        if (service != null) {
-            val ok = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_POWER_DIALOG)
-            if (ok) {
-                AppLogger.i("System", "🟢 Đã mở bảng nguồn hệ thống qua Trợ năng (Auto-Click sẽ tự bấm Khởi động lại)")
-                return true to "Đang kích hoạt khởi động lại Box qua Trợ năng..."
-            }
-        }
-
-        return false to "Không thể tự động reboot: Cần quyền Root hoặc chữ ký System. Bạn có thể rút nguồn khởi động lại nếu bị treo."
+        return false to "Không thể tự động reboot: Trợ năng chưa sẵn sàng và thiết bị không có quyền Root."
     }
 
     fun executeShell(cmd: String): String {

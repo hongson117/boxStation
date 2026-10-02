@@ -12,6 +12,9 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import android.content.ComponentName
+import java.net.InetSocketAddress
+import java.net.Socket
 import kotlinx.coroutines.*
 
 class StationService : Service() {
@@ -49,15 +52,60 @@ class StationService : Service() {
         httpServer?.start()
         isServiceRunning = true
 
-        // 3. Tự động kiểm tra lịch khởi động lại mỗi 3h sáng
+        // 3. Tự động kiểm tra lịch khởi động lại mỗi 3h sáng, FPT Shield & Giám sát AceHub
         rebootJob = CoroutineScope(Dispatchers.Default).launch {
+            var counter = 0
             while (isActive) {
                 try {
-                    AutoRebootHelper.checkAndTriggerDailyReboot(applicationContext)
+                    // Chạy FPT Shield mỗi 15 giây
+                    FptShieldHelper.protectNow(applicationContext)
+
+                    // Kiểm tra lịch Reboot & Giám sát AceHub mỗi 30 giây
+                    if (counter % 2 == 0) {
+                        AutoRebootHelper.checkAndTriggerDailyReboot(applicationContext)
+                        superviseAceHub(applicationContext)
+                    }
+                    counter++
                 } catch (e: Exception) {
                     // pass
                 }
-                delay(30_000)
+                delay(15_000)
+            }
+        }
+    }
+
+    private fun isPortOpen(port: Int): Boolean {
+        return try {
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress("127.0.0.1", port), 1000)
+                true
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun superviseAceHub(context: Context) {
+        if (!isPortOpen(8000)) {
+            AppLogger.w("SUPERVISOR", "⚠️ AceHub cổng 8000 chưa phản hồi! Đang tự động đánh thức AceHub...")
+            val autoService = AutoInstallService.instance
+            if (autoService != null) {
+                autoService.wakeAceHub()
+            } else {
+                try {
+                    val intent = Intent().apply {
+                        component = ComponentName("vn.lienson.acesport.g2probe", "vn.lienson.acesport.g2probe.G2OrchestratorService")
+                        action = "ACTION_START_HUB"
+                        addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+                    }
+                    context.startService(intent)
+                } catch (e: Exception) {
+                    try {
+                        val launchIntent = context.packageManager.getLaunchIntentForPackage("vn.lienson.acesport.g2probe")
+                        launchIntent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        if (launchIntent != null) context.startActivity(launchIntent)
+                    } catch (e2: Exception) {}
+                }
             }
         }
     }
