@@ -776,36 +776,62 @@ class StationHttpServer(private val context: Context, val port: Int = 8888) {
     }
 
     private fun streamUntilBoundary(input: InputStream, boundary: ByteArray, out: OutputStream) {
-        val buffer = ByteArray(65536)
-        val matchBuffer = ByteArray(boundary.size + 4) // Chứa \r\n + boundary
-        var matchLen = 0
-
-        // Boundary pattern trong stream thực tế có tiền tố \r\n
         val fullBoundary = ("\r\n" + String(boundary, StandardCharsets.ISO_8859_1)).toByteArray(StandardCharsets.ISO_8859_1)
+        val bLen = fullBoundary.size
+        val buffer = ByteArray(65536)
+        val bufferedOut = java.io.BufferedOutputStream(out, 65536)
+        var tail = ByteArray(0)
 
-        var b: Int
-        while (input.read().also { b = it } != -1) {
-            val byteVal = b.toByte()
-            if (byteVal == fullBoundary[matchLen]) {
-                matchBuffer[matchLen++] = byteVal
-                if (matchLen == fullBoundary.size) {
-                    // Đã tới boundary kết thúc phần file, dừng ghi
-                    break
-                }
-            } else {
-                if (matchLen > 0) {
-                    out.write(matchBuffer, 0, matchLen)
-                    matchLen = 0
-                    if (byteVal == fullBoundary[0]) {
-                        matchBuffer[matchLen++] = byteVal
-                    } else {
-                        out.write(b)
-                    }
+        try {
+            var n: Int
+            while (input.read(buffer).also { n = it } != -1) {
+                val combined = if (tail.isNotEmpty()) {
+                    val c = ByteArray(tail.size + n)
+                    System.arraycopy(tail, 0, c, 0, tail.size)
+                    System.arraycopy(buffer, 0, c, tail.size, n)
+                    c
                 } else {
-                    out.write(b)
+                    val c = ByteArray(n)
+                    System.arraycopy(buffer, 0, c, 0, n)
+                    c
+                }
+
+                val matchIdx = indexOfBytePattern(combined, fullBoundary)
+                if (matchIdx != -1) {
+                    if (matchIdx > 0) {
+                        bufferedOut.write(combined, 0, matchIdx)
+                    }
+                    bufferedOut.flush()
+                    return
+                }
+
+                if (combined.size > bLen) {
+                    val writeLen = combined.size - bLen
+                    bufferedOut.write(combined, 0, writeLen)
+                    tail = ByteArray(bLen)
+                    System.arraycopy(combined, writeLen, tail, 0, bLen)
+                } else {
+                    tail = combined
                 }
             }
+            if (tail.isNotEmpty()) {
+                bufferedOut.write(tail)
+            }
+            bufferedOut.flush()
+        } finally {
+            bufferedOut.flush()
         }
+    }
+
+    private fun indexOfBytePattern(data: ByteArray, target: ByteArray): Int {
+        if (target.isEmpty() || data.size < target.size) return -1
+        outer@ for (i in 0..(data.size - target.size)) {
+            for (j in target.indices) {
+                if (data[i + j] != target[j]) continue@outer
+            }
+            return i
+        }
+        return -1
     }
 
     // --- 4. TẠO THƯ MỤC & XÓA ---
